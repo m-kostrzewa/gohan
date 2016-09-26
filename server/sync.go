@@ -16,9 +16,11 @@
 package server
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwan/gohan/db"
@@ -54,6 +56,54 @@ func transactionCommitInformer() chan int {
 		transactionCommited = make(chan int, 1)
 	}
 	return transactionCommited
+
+}
+
+var keyUpdated map[string]*list.List
+var subsListMutex sync.Mutex
+
+func keyUpdateSubscribers(key string) *list.List {
+	if keyUpdated == nil {
+		log.Critical("Creating key update subs")
+		keyUpdated = make(map[string]*list.List)
+	}
+	if _, ok := keyUpdated[key]; !ok {
+		log.Critical("Creating update sub list for new key %s", key)
+		keyUpdated[key] = list.New()
+	}
+	return keyUpdated[key]
+}
+
+func notifyKeyUpdateSubscribers(fullKey string) {
+	log.Critical("%s notifying START.", fullKey)
+
+	url := strings.TrimPrefix(fullKey, "/state")
+	key := strings.Split(url, "/")
+	for i := 0; i < len(key); i++ {
+		subkey := strings.Join(key[:i+1], "/")
+		log.Critical("Notifying key %s", subkey)
+
+		subsListMutex.Lock()
+		subs := keyUpdateSubscribers(subkey)
+		for e := subs.Front(); e != nil; e = e.Next() {
+			log.Critical("Notifying...")
+			e.Value.(chan bool) <- true
+		}
+		for e := subs.Front(); e != nil; e = subs.Front() {
+			subs.Remove(e)
+		}
+		subsListMutex.Unlock()
+	}
+	log.Critical("%s notifying DONE.", url)
+}
+
+func KeyUpdateChannel(key string) chan bool {
+	subsListMutex.Lock()
+	subs := keyUpdateSubscribers(key)
+	c := make(chan bool)
+	subs.PushBack(c)
+	subsListMutex.Unlock()
+	return c
 }
 
 //DbSyncWrapper wraps db.DB so it logs events in database on every transaction.
@@ -529,6 +579,7 @@ func startStateUpdatingProcess(server *Server) {
 				if err != nil {
 					log.Warning(fmt.Sprintf("error during state update: %s", err))
 				}
+				notifyKeyUpdateSubscribers(response.Key)
 				log.Info("Completed StateUpdate")
 			}()
 		}

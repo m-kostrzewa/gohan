@@ -16,6 +16,9 @@
 package server
 
 import (
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -216,6 +219,11 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			handleError(w, err)
 			return
 		}
+
+		if r.Header.Get("Long-Poll") == "true" {
+			waitForNewChanges(w, r, context)
+		}
+
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
 		routes.ServeJson(w, context["response"])
 	}
@@ -234,6 +242,11 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			handleError(w, err)
 			return
 		}
+
+		if r.Header.Get("Long-Poll") == "true" {
+			waitForNewChanges(w, r, context)
+		}
+
 		routes.ServeJson(w, context["response"])
 	}
 	route.Get(singleURL, middleware.Authorization(schema.ActionRead), getSingleFunc)
@@ -386,6 +399,37 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		}
 		route.AddRoute(action.Method, s.GetActionURL(action.Path), ActionFunc)
 	}
+}
+
+func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middleware.Context) {
+	etag := calculateResponseEtag(context)
+	if etag == r.Header.Get("If-None-Match") {
+		log.Critical("Long-Poll %s - etags match, will wait", r.URL.Path)
+		log.Critical("Waiting for %s", r.URL.Path)
+		<-KeyUpdateChannel(r.URL.Path)
+		log.Critical("Woken up from %s", r.URL.Path)
+		newEtag := calculateResponseEtag(context)
+		w.Header().Add("Etag", newEtag)
+	} else {
+		log.Critical("Long-Poll %s - responding immediately", r.URL.Path)
+		w.Header().Add("Etag", etag)
+	}
+}
+
+func calculateResponseEtag(context middleware.Context) string {
+	hash := md5.New()
+	responseBytes, err := json.Marshal(context["response"])
+	if err == nil {
+		hash.Write(responseBytes)
+	} else {
+		randomBytes := make([]byte, 8)
+		rand.Read(randomBytes)
+		hash.Write(randomBytes)
+		log.Debug("Couldn't calculate response etag: %s. Generating random md5.", err)
+	}
+	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
+	log.Debug("Calculated etag: %s", etag)
+	return etag
 }
 
 //MapRouteBySchemas setup route for all loaded schema
