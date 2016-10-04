@@ -16,7 +16,6 @@
 package server
 
 import (
-	"container/list"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -41,9 +40,11 @@ const (
 	configPrefix     = "/config/"
 	statePrefix      = "/state/"
 	monitoringPrefix = "/monitoring/"
+	longPollPrefix   = "/gohan/long_poll_notifications/"
 
-	eventPollingTime  = 30 * time.Second
-	eventPollingLimit = 10000
+	eventPollingTime        = 30 * time.Second
+	eventPollingLimit       = 10000
+	longPollNotificationTTL = 10 // sec
 
 	StateUpdateEventName      = "state_update"
 	MonitoringUpdateEventName = "monitoring_update"
@@ -59,51 +60,111 @@ func transactionCommitInformer() chan int {
 
 }
 
-var keyUpdated map[string]*list.List
-var subsListMutex sync.Mutex
+var keyUpdated map[string]*sync.Cond
+var keyUpdatedGuard sync.Mutex // need this because maps aren't thread safe
 
-func keyUpdateSubscribers(key string) *list.List {
+func KeyUpdateCond(key string) *sync.Cond {
+	keyUpdatedGuard.Lock()
 	if keyUpdated == nil {
 		log.Critical("Creating key update subs")
-		keyUpdated = make(map[string]*list.List)
+		keyUpdated = make(map[string]*sync.Cond)
 	}
 	if _, ok := keyUpdated[key]; !ok {
-		log.Critical("Creating update sub list for new key %s", key)
-		keyUpdated[key] = list.New()
+		log.Critical("Creating update sub condition for new key %s", key)
+		m := &sync.Mutex{}
+		keyUpdated[key] = sync.NewCond(m)
 	}
+	keyUpdatedGuard.Unlock()
 	return keyUpdated[key]
 }
 
-func notifyKeyUpdateSubscribers(fullKey string) {
+func notifyKeyUpdateSubscribers(fullKey string) error {
 	log.Critical("%s notifying START.", fullKey)
 
 	url := strings.TrimPrefix(fullKey, "/state")
 	key := strings.Split(url, "/")
 	for i := 0; i < len(key); i++ {
-		subkey := strings.Join(key[:i+1], "/")
+		subkey := strings.Join(key[:i+1], "/") + "/"
 		log.Critical("Notifying key %s", subkey)
 
-		subsListMutex.Lock()
-		subs := keyUpdateSubscribers(subkey)
-		for e := subs.Front(); e != nil; e = e.Next() {
-			log.Critical("Notifying...")
-			e.Value.(chan bool) <- true
-		}
-		for e := subs.Front(); e != nil; e = subs.Front() {
-			subs.Remove(e)
-		}
-		subsListMutex.Unlock()
+		cond := KeyUpdateCond(subkey) // race here???
+		keyUpdatedGuard.Lock()
+		cond.Broadcast()
+		delete(keyUpdated, subkey)
+		keyUpdatedGuard.Unlock()
 	}
 	log.Critical("%s notifying DONE.", url)
+	return nil
 }
 
-func KeyUpdateChannel(key string) chan bool {
-	subsListMutex.Lock()
-	subs := keyUpdateSubscribers(key)
-	c := make(chan bool)
-	subs.PushBack(c)
-	subsListMutex.Unlock()
-	return c
+func addLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
+	path := longPollPrefix + strings.TrimPrefix(fullKey, statePrefix)
+	log.Critical("addLongPollNotificationEntry path = %s", path)
+	if err := sync.UpdateTTL(path, "", longPollNotificationTTL); err != nil {
+		return err
+	}
+	return nil
+}
+
+//DbLongPollNotifierWrapper notifies long poll subscribers on modifying transactions (create/update/delete).
+type DbLongPollNotifierWrapper struct {
+	db.DB
+	gohan_sync.Sync
+}
+
+func (notifierWrapper *DbLongPollNotifierWrapper) Begin() (transaction.Transaction, error) {
+	tx, err := notifierWrapper.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return newTransactionLongPollNotifier(tx, notifierWrapper.Sync), nil
+}
+
+type transactionLongPollNotifier struct {
+	transaction.Transaction
+	sync gohan_sync.Sync
+}
+
+func newTransactionLongPollNotifier(tx transaction.Transaction, sync gohan_sync.Sync) *transactionLongPollNotifier {
+	return &transactionLongPollNotifier{tx, sync}
+}
+
+func (notifier *transactionLongPollNotifier) Create(resource *schema.Resource) error {
+	if err := notifier.Transaction.Create(resource); err != nil {
+		return err
+	}
+	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (notifier *transactionLongPollNotifier) Update(resource *schema.Resource) error {
+	if err := notifier.Transaction.Update(resource); err != nil {
+		return err
+	}
+	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (notifier *transactionLongPollNotifier) Delete(s *schema.Schema, resourceID interface{}) error {
+	resource, err := notifier.Fetch(s, transaction.IDFilter(resourceID))
+	if err != nil {
+		return err
+	}
+	if err := notifier.Transaction.Delete(s, resourceID); err != nil {
+		return err
+	}
+	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (notifier *transactionLongPollNotifier) Commit() error {
+	return notifier.Transaction.Commit()
 }
 
 //DbSyncWrapper wraps db.DB so it logs events in database on every transaction.
@@ -579,7 +640,7 @@ func startStateUpdatingProcess(server *Server) {
 				if err != nil {
 					log.Warning(fmt.Sprintf("error during state update: %s", err))
 				}
-				notifyKeyUpdateSubscribers(response.Key)
+				addLongPollNotificationEntry(response.Key, server.sync)
 				log.Info("Completed StateUpdate")
 			}()
 		}
@@ -703,4 +764,42 @@ func startSyncWatchProcess(server *Server) {
 
 //Stop Watch Process
 func stopSyncWatchProcess(server *Server) {
+}
+
+func startLongPollWatchProcess(server *Server) {
+
+	responseChan := make(chan *gohan_sync.Event)
+	stopChan := make(chan bool)
+
+	if _, err := server.sync.Fetch(longPollPrefix); err != nil {
+		server.sync.Update(longPollPrefix, "")
+	}
+
+	go func() {
+		defer util.LogFatalPanic(log)
+		for server.running {
+			err := server.sync.Watch(longPollPrefix, responseChan, stopChan)
+			if err != nil {
+				log.Error(fmt.Sprintf("sync watch error: %s", err))
+			}
+		}
+	}()
+	go func() {
+		defer util.LogFatalPanic(log)
+		for server.running {
+			response := <-responseChan
+			go func() {
+				// don't notify subs on "expire"
+				log.Critical("Long poll watch: %s %s %s", response.Action, response.Key, response.Data)
+				if response.Action == "create" || response.Action == "set" || response.Action == "update" {
+					path := "/" + strings.TrimPrefix(response.Key, longPollPrefix)
+					if err := notifyKeyUpdateSubscribers(path); err != nil {
+						log.Warning(fmt.Sprintf("error during key subscribers notification (long polling): %s", err))
+					}
+					log.Info("Completed long poll key subscribers notification")
+				}
+			}()
+		}
+		stopChan <- true
+	}()
 }

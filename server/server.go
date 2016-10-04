@@ -140,7 +140,7 @@ func (server *Server) connectDB() error {
 	if server.sync == nil {
 		server.db = dbConn
 	} else {
-		server.db = &DbSyncWrapper{dbConn}
+		server.db = &DbLongPollNotifierWrapper{&DbSyncWrapper{dbConn}, server.sync}
 	}
 	return err
 }
@@ -427,6 +427,7 @@ func RunServer(configFile string) {
 		startSyncProcess(server)
 		startStateUpdatingProcess(server)
 		startSyncWatchProcess(server)
+		startLongPollWatchProcess(server)
 	}
 	startAMQPProcess(server)
 	startSNMPProcess(server)

@@ -16,9 +16,9 @@
 package server
 
 import (
+	"bytes"
 	"crypto/md5"
-	"crypto/rand"
-	"encoding/json"
+	"encoding/gob"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -222,6 +222,13 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 
 		if r.Header.Get("Long-Poll") == "true" {
 			waitForNewChanges(w, r, context)
+			delete(context, "response")
+			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
+				handleError(w, err)
+				return
+			}
+			newEtag := calculateResponseEtag(context)
+			w.Header().Add("Long-Poll-Etag", newEtag)
 		}
 
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
@@ -245,6 +252,13 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 
 		if r.Header.Get("Long-Poll") == "true" {
 			waitForNewChanges(w, r, context)
+			delete(context, "response")
+			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
+				handleError(w, err)
+				return
+			}
+			newEtag := calculateResponseEtag(context)
+			w.Header().Add("Long-Poll-Etag", newEtag)
 		}
 
 		routes.ServeJson(w, context["response"])
@@ -403,30 +417,27 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 
 func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middleware.Context) {
 	etag := calculateResponseEtag(context)
-	if etag == r.Header.Get("If-None-Match") {
+	if etag == r.Header.Get("Long-Poll-If-None-Match") {
 		log.Critical("Long-Poll %s - etags match, will wait", r.URL.Path)
 		log.Critical("Waiting for %s", r.URL.Path)
-		<-KeyUpdateChannel(r.URL.Path)
+		cond := KeyUpdateCond(r.URL.Path)
+		cond.L.Lock()
+		cond.Wait()
+		cond.L.Unlock()
 		log.Critical("Woken up from %s", r.URL.Path)
-		newEtag := calculateResponseEtag(context)
-		w.Header().Add("Etag", newEtag)
 	} else {
 		log.Critical("Long-Poll %s - responding immediately", r.URL.Path)
-		w.Header().Add("Etag", etag)
 	}
 }
 
 func calculateResponseEtag(context middleware.Context) string {
+	resp := context["response"]
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	enc.Encode(resp)
+	responseBytes := buf.Bytes()
 	hash := md5.New()
-	responseBytes, err := json.Marshal(context["response"])
-	if err == nil {
-		hash.Write(responseBytes)
-	} else {
-		randomBytes := make([]byte, 8)
-		rand.Read(randomBytes)
-		hash.Write(randomBytes)
-		log.Debug("Couldn't calculate response etag: %s. Generating random md5.", err)
-	}
+	hash.Write(responseBytes)
 	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
 	log.Debug("Calculated etag: %s", etag)
 	return etag
