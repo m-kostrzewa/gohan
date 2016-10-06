@@ -35,6 +35,7 @@ import (
 	gohan_sync "github.com/cloudwan/gohan/sync"
 	gohan_etcd "github.com/cloudwan/gohan/sync/etcd"
 	"github.com/cloudwan/gohan/util"
+	"sync"
 )
 
 var (
@@ -65,7 +66,7 @@ var _ = Describe("Server package test", func() {
 			Expect(err).ToNot(HaveOccurred(), "Failed to clear table.")
 		}
 		err = tx.Commit()
-		Expect(err).ToNot(HaveOccurred(), "Failed to commite transaction.")
+		Expect(err).ToNot(HaveOccurred(), "Failed to commit transaction.")
 	})
 
 	Describe("Http request", func() {
@@ -1091,7 +1092,185 @@ var _ = Describe("Server package test", func() {
 			testURL("POST", responderPluralURL+"/r1/dzien_dobry", adminTokenID, unknownAction, http.StatusNotFound)
 		})
 	})
+
+	Describe("Message dispatch", func() {
+		It("should work", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key"}
+
+			test.startConsumers(consumerKeys, forwardingConsumer)
+
+			test.sendMessages(consumerKeys)
+			test.closeMessageDispatch()
+
+			datum := <- test.channelsFromConsumers[0]
+			Expect(datum).To(Equal("/key"))
+		})
+
+		It("should transform key", func() {
+			test := NewMessageDispatchTest(func(input string) string{
+				return "transformed"
+			})
+
+			consumerKeys := []string{"/key"}
+
+			test.startConsumers(consumerKeys, forwardingConsumer)
+
+			test.sendMessages(consumerKeys)
+			test.closeMessageDispatch()
+
+			datum := <- test.channelsFromConsumers[0]
+			Expect(datum).To(Equal("transformed"))
+		})
+
+		It("should normalize registered key", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"///key1//key2///"}
+
+			test.startConsumers(consumerKeys, forwardingConsumer)
+
+			test.sendMessage("/key1/key2")
+			test.closeMessageDispatch()
+
+			datum := <- test.channelsFromConsumers[0]
+			Expect(datum).To(Equal("/key1/key2"))
+		})
+
+		It("should dispatch by key", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key1", "/key2"}
+
+			test.startConsumers(consumerKeys, func (key string, id int, input chan string, output chan string){
+				for actualKey := range input {
+					if actualKey == key {
+						output <- "ok"
+					} else {
+						output <- "error"
+					}
+				}
+			})
+
+			test.sendMessages(consumerKeys)
+			test.closeMessageDispatch()
+
+			for _, ch := range test.channelsFromConsumers {
+				status := <- ch
+				Expect(status).To(Equal("ok"))
+			}
+		})
+
+		It("should dispatch to all listeners of a key", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key1", "/key1"}
+			consumerIds := []int{0, 1}
+
+			test.startConsumersWithIds(consumerKeys, consumerIds, func (key string, id int, input chan string, output chan string){
+				for range input {
+					output <- strconv.Itoa(id)
+				}
+			})
+
+			test.sendMessage("/key1")
+			test.closeMessageDispatch()
+
+			for i, ch := range test.channelsFromConsumers {
+				id := <- ch
+				Expect(id).To(Equal(strconv.Itoa(i)))
+			}
+		})
+
+		It("should close listener channels on close when no messages send", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key1"}
+
+			test.startConsumers(consumerKeys, func (key string, id int, input chan string, output chan string){
+				_, ok := <- input
+				output <- strconv.FormatBool(ok)
+			})
+
+			test.closeMessageDispatch()
+
+			messageReceived := <- test.channelsFromConsumers[0]
+			Expect(messageReceived).To(Equal("false"))
+		})
+
+		It("should notify about child key changes", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key"}
+
+			test.startConsumers(consumerKeys, forwardingConsumer)
+
+			test.sendMessage("/key/child/key")
+			test.closeMessageDispatch()
+
+			datum := <- test.channelsFromConsumers[0]
+			Expect(datum).To(Equal("/key/child/key"))
+		})
+	})
 })
+
+type MessageDispatchTest struct {
+	messageDispatch *srv.MessageDispatch
+	channelsFromConsumers []chan string
+}
+
+func NewMessageDispatchTest(transform func (string) string) MessageDispatchTest {
+	test := MessageDispatchTest{}
+	test.messageDispatch = srv.NewMessageDispatch(transform)
+	return test
+}
+
+type ConsumerFunction func (key string, id int, input chan string, output chan string)
+
+func (test *MessageDispatchTest) startConsumers(consumerKeys []string, consumer ConsumerFunction) {
+	test.startConsumersWithIds(consumerKeys, make([]int, len(consumerKeys)), consumer)
+}
+
+func (test *MessageDispatchTest) startConsumersWithIds(consumerKeys []string, customerIds []int, consumer ConsumerFunction) {
+	test.channelsFromConsumers = make([]chan string, len(consumerKeys))
+	for i, _ := range test.channelsFromConsumers {
+		test.channelsFromConsumers[i] = make(chan string)
+	}
+
+	consumerReady := sync.WaitGroup{}
+	consumerReady.Add(len(consumerKeys))
+
+	consumerGoroutine := func(output chan string, key string, id int, consumer ConsumerFunction) {
+		fromProducer := make(chan string)
+		test.messageDispatch.Register(fromProducer, key)
+		consumerReady.Done()
+
+		consumer(key, id, fromProducer, output)
+
+		close(output)
+	}
+
+	for i, key := range consumerKeys{
+		go consumerGoroutine(test.channelsFromConsumers[i], key, customerIds[i], consumer)
+	}
+
+	consumerReady.Wait()
+}
+
+func (test *MessageDispatchTest) sendMessages(messages []string) {
+	for _, msg := range messages {
+		test.messageDispatch.Send(msg)
+	}
+}
+
+func (test *MessageDispatchTest) sendMessage(message string) {
+	test.messageDispatch.Send(message)
+}
+
+func (test *MessageDispatchTest) closeMessageDispatch() {
+	test.messageDispatch.Close()
+}
 
 func BenchmarkPOSTAPI(b *testing.B) {
 	err := initBenchmarkDatabase()
@@ -1288,4 +1467,14 @@ func clearTable(tx transaction.Transaction, s *schema.Schema) error {
 		}
 	}
 	return nil
+}
+
+func identity(input string) string {
+	return input
+}
+
+func forwardingConsumer (key string, id int, input chan string, output chan string) {
+	for v := range input {
+		output <- v
+	}
 }
