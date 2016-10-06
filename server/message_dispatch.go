@@ -16,18 +16,18 @@
 package server
 
 import (
-	"sync"
 	"strings"
+	"sync"
 )
 
 type MessageDispatch struct {
 	input       chan string
 	output      map[string][]chan string
 	outputMutex sync.Mutex
-	transform func (string) string
+	transform   func(string) string
 }
 
-func NewMessageDispatch(transform func (string) string) *MessageDispatch {
+func NewMessageDispatch(transform func(string) string) *MessageDispatch {
 	messageDispatch := MessageDispatch{
 		make(chan string),
 		make(map[string][]chan string),
@@ -45,7 +45,7 @@ func (md *MessageDispatch) dispatch() {
 	for key := range md.input {
 		md.outputMutex.Lock()
 		datum := md.transform(key)
-		for _, parent := range getParentKeys(key){
+		for _, parent := range getParentKeys(key) {
 			for _, client := range md.output[parent] {
 				client <- datum
 				close(client)
@@ -66,7 +66,7 @@ func getParentKeys(key string) []string {
 
 	parentKeys := make([]string, len(keyParts)-1)
 	parentKeys[0] = "/" + keyParts[1]
-	for i := 1; i < len(parentKeys); i++{
+	for i := 1; i < len(parentKeys); i++ {
 		parentKeys[i] = parentKeys[i-1] + "/" + keyParts[i+1]
 	}
 
@@ -75,7 +75,7 @@ func getParentKeys(key string) []string {
 
 func (md *MessageDispatch) cleanup() {
 	log.Debug("[long_polling] cleanup")
-	for key, channels := range md.output{
+	for key, channels := range md.output {
 		for _, ch := range channels {
 			close(ch)
 		}
@@ -96,7 +96,7 @@ func (md *MessageDispatch) Register(output chan string, key string) {
 func normalizeKey(key string) string {
 	keyParts := strings.Split(key, "/")
 	normalizedKey := ""
-	for _, part := range keyParts{
+	for _, part := range keyParts {
 		if len(part) == 0 {
 			continue
 		}

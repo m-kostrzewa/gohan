@@ -1104,12 +1104,12 @@ var _ = Describe("Server package test", func() {
 			test.sendMessages(consumerKeys)
 			test.closeMessageDispatch()
 
-			datum := <- test.channelsFromConsumers[0]
+			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key"))
 		})
 
 		It("should transform key", func() {
-			test := NewMessageDispatchTest(func(input string) string{
+			test := NewMessageDispatchTest(func(input string) string {
 				return "transformed"
 			})
 
@@ -1120,7 +1120,7 @@ var _ = Describe("Server package test", func() {
 			test.sendMessages(consumerKeys)
 			test.closeMessageDispatch()
 
-			datum := <- test.channelsFromConsumers[0]
+			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("transformed"))
 		})
 
@@ -1134,7 +1134,7 @@ var _ = Describe("Server package test", func() {
 			test.sendMessage("/key1/key2")
 			test.closeMessageDispatch()
 
-			datum := <- test.channelsFromConsumers[0]
+			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key1/key2"))
 		})
 
@@ -1143,7 +1143,7 @@ var _ = Describe("Server package test", func() {
 
 			consumerKeys := []string{"/key1", "/key2"}
 
-			test.startConsumers(consumerKeys, func (key string, id int, input chan string, output chan string){
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string) {
 				for actualKey := range input {
 					if actualKey == key {
 						output <- "ok"
@@ -1157,7 +1157,7 @@ var _ = Describe("Server package test", func() {
 			test.closeMessageDispatch()
 
 			for _, ch := range test.channelsFromConsumers {
-				status := <- ch
+				status := <-ch
 				Expect(status).To(Equal("ok"))
 			}
 		})
@@ -1168,7 +1168,7 @@ var _ = Describe("Server package test", func() {
 			consumerKeys := []string{"/key1", "/key1"}
 			consumerIds := []int{0, 1}
 
-			test.startConsumersWithIds(consumerKeys, consumerIds, func (key string, id int, input chan string, output chan string){
+			test.startConsumersWithIds(consumerKeys, consumerIds, func(key string, id int, input chan string, output chan string) {
 				for range input {
 					output <- strconv.Itoa(id)
 				}
@@ -1178,7 +1178,7 @@ var _ = Describe("Server package test", func() {
 			test.closeMessageDispatch()
 
 			for i, ch := range test.channelsFromConsumers {
-				id := <- ch
+				id := <-ch
 				Expect(id).To(Equal(strconv.Itoa(i)))
 			}
 		})
@@ -1188,14 +1188,14 @@ var _ = Describe("Server package test", func() {
 
 			consumerKeys := []string{"/key1"}
 
-			test.startConsumers(consumerKeys, func (key string, id int, input chan string, output chan string){
-				_, ok := <- input
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string) {
+				_, ok := <-input
 				output <- strconv.FormatBool(ok)
 			})
 
 			test.closeMessageDispatch()
 
-			messageReceived := <- test.channelsFromConsumers[0]
+			messageReceived := <-test.channelsFromConsumers[0]
 			Expect(messageReceived).To(Equal("false"))
 		})
 
@@ -1209,24 +1209,24 @@ var _ = Describe("Server package test", func() {
 			test.sendMessage("/key/child/key")
 			test.closeMessageDispatch()
 
-			datum := <- test.channelsFromConsumers[0]
+			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key/child/key"))
 		})
 	})
 })
 
 type MessageDispatchTest struct {
-	messageDispatch *srv.MessageDispatch
+	messageDispatch       *srv.MessageDispatch
 	channelsFromConsumers []chan string
 }
 
-func NewMessageDispatchTest(transform func (string) string) MessageDispatchTest {
+func NewMessageDispatchTest(transform func(string) string) MessageDispatchTest {
 	test := MessageDispatchTest{}
 	test.messageDispatch = srv.NewMessageDispatch(transform)
 	return test
 }
 
-type ConsumerFunction func (key string, id int, input chan string, output chan string)
+type ConsumerFunction func(key string, id int, input chan string, output chan string)
 
 func (test *MessageDispatchTest) startConsumers(consumerKeys []string, consumer ConsumerFunction) {
 	test.startConsumersWithIds(consumerKeys, make([]int, len(consumerKeys)), consumer)
@@ -1251,7 +1251,7 @@ func (test *MessageDispatchTest) startConsumersWithIds(consumerKeys []string, cu
 		close(output)
 	}
 
-	for i, key := range consumerKeys{
+	for i, key := range consumerKeys {
 		go consumerGoroutine(test.channelsFromConsumers[i], key, customerIds[i], consumer)
 	}
 
@@ -1473,7 +1473,7 @@ func identity(input string) string {
 	return input
 }
 
-func forwardingConsumer (key string, id int, input chan string, output chan string) {
+func forwardingConsumer(key string, id int, input chan string, output chan string) {
 	for v := range input {
 		output <- v
 	}
