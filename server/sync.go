@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cloudwan/gohan/db"
@@ -60,49 +59,23 @@ func transactionCommitInformer() chan int {
 
 }
 
-var keyUpdated map[string]*sync.Cond
-var keyUpdatedGuard sync.Mutex // need this because maps aren't thread safe
+var longPollDispatch *MessageDispatch
 
-func KeyUpdateCond(key string) *sync.Cond {
-	keyUpdatedGuard.Lock()
-	if keyUpdated == nil {
-		log.Critical("Creating key update subs")
-		keyUpdated = make(map[string]*sync.Cond)
+func LongPollDispatch() *MessageDispatch {
+	if longPollDispatch == nil {
+		longPollDispatch = NewMessageDispatch(func(input string) string {
+			return input
+		})
 	}
-	if _, ok := keyUpdated[key]; !ok {
-		log.Critical("Creating update sub condition for new key %s", key)
-		m := &sync.Mutex{}
-		keyUpdated[key] = sync.NewCond(m)
-	}
-	keyUpdatedGuard.Unlock()
-	return keyUpdated[key]
+	return longPollDispatch
 }
 
 func notifyKeyUpdateSubscribers(fullKey string) error {
+
 	log.Critical("%s notifying START.", fullKey)
-
-	url := strings.TrimPrefix(fullKey, "/state")
-	key := strings.Split(url, "/")
-	for i := 0; i < len(key); i++ {
-		subkey := strings.Join(key[:i+1], "/") + "/"
-		log.Critical("Notifying key %s", subkey)
-
-		cond := KeyUpdateCond(subkey) // race here???
-		keyUpdatedGuard.Lock()
-		cond.Broadcast()
-		delete(keyUpdated, subkey)
-		keyUpdatedGuard.Unlock()
-	}
-	log.Critical("%s notifying DONE.", url)
-	return nil
-}
-
-func addLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
-	path := longPollPrefix + strings.TrimPrefix(fullKey, statePrefix)
-	log.Critical("addLongPollNotificationEntry path = %s", path)
-	if err := sync.UpdateTTL(path, "", longPollNotificationTTL); err != nil {
-		return err
-	}
+	md := LongPollDispatch()
+	md.Send(fullKey)
+	log.Critical("%s notifying DONE.", fullKey)
 	return nil
 }
 
@@ -122,20 +95,19 @@ func (notifierWrapper *DbLongPollNotifierWrapper) Begin() (transaction.Transacti
 
 type transactionLongPollNotifier struct {
 	transaction.Transaction
-	sync gohan_sync.Sync
+	sync         gohan_sync.Sync
+	resourcePath string
 }
 
 func newTransactionLongPollNotifier(tx transaction.Transaction, sync gohan_sync.Sync) *transactionLongPollNotifier {
-	return &transactionLongPollNotifier{tx, sync}
+	return &transactionLongPollNotifier{tx, sync, ""}
 }
 
 func (notifier *transactionLongPollNotifier) Create(resource *schema.Resource) error {
 	if err := notifier.Transaction.Create(resource); err != nil {
 		return err
 	}
-	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
-		return err
-	}
+	notifier.resourcePath = resource.Path()
 	return nil
 }
 
@@ -143,9 +115,7 @@ func (notifier *transactionLongPollNotifier) Update(resource *schema.Resource) e
 	if err := notifier.Transaction.Update(resource); err != nil {
 		return err
 	}
-	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
-		return err
-	}
+	notifier.resourcePath = resource.Path()
 	return nil
 }
 
@@ -157,14 +127,31 @@ func (notifier *transactionLongPollNotifier) Delete(s *schema.Schema, resourceID
 	if err := notifier.Transaction.Delete(s, resourceID); err != nil {
 		return err
 	}
-	if err := addLongPollNotificationEntry(resource.Path(), notifier.sync); err != nil {
+	notifier.resourcePath = resource.Path()
+	return nil
+}
+
+func (notifier *transactionLongPollNotifier) Commit() error {
+	if err := notifier.Transaction.Commit(); err != nil {
+		return err
+	}
+	if err := addLongPollNotificationEntry(notifier.resourcePath, notifier.sync); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (notifier *transactionLongPollNotifier) Commit() error {
-	return notifier.Transaction.Commit()
+func addLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
+	postfix := strings.TrimPrefix(fullKey, statePrefix)
+	if postfix == "" {
+		return nil
+	}
+	path := longPollPrefix + postfix
+	log.Critical("addLongPollNotificationEntry path = %s", path)
+	if err := sync.UpdateTTL(path, "dummy", longPollNotificationTTL); err != nil {
+		return err
+	}
+	return nil
 }
 
 //DbSyncWrapper wraps db.DB so it logs events in database on every transaction.

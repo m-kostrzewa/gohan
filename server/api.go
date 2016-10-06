@@ -16,9 +16,8 @@
 package server
 
 import (
-	"bytes"
 	"crypto/md5"
-	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -223,6 +222,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		if r.Header.Get("Long-Poll") == "true" {
 			waitForNewChanges(w, r, context)
 			delete(context, "response")
+			log.Critical("Getting second time")
 			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
 				handleError(w, err)
 				return
@@ -253,6 +253,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		if r.Header.Get("Long-Poll") == "true" {
 			waitForNewChanges(w, r, context)
 			delete(context, "response")
+			log.Critical("Getting second time")
 			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
 				handleError(w, err)
 				return
@@ -419,11 +420,14 @@ func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middlewar
 	etag := calculateResponseEtag(context)
 	if etag == r.Header.Get("Long-Poll-If-None-Match") {
 		log.Critical("Long-Poll %s - etags match, will wait", r.URL.Path)
-		log.Critical("Waiting for %s", r.URL.Path)
-		cond := KeyUpdateCond(r.URL.Path)
-		cond.L.Lock()
-		cond.Wait()
-		cond.L.Unlock()
+
+		ch := make(chan string)
+		key := r.URL.Path
+		dispatch := LongPollDispatch()
+		dispatch.Register(ch, key)
+
+		log.Critical("Waiting for %s", key)
+		<-ch
 		log.Critical("Woken up from %s", r.URL.Path)
 	} else {
 		log.Critical("Long-Poll %s - responding immediately", r.URL.Path)
@@ -431,12 +435,8 @@ func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middlewar
 }
 
 func calculateResponseEtag(context middleware.Context) string {
-	resp := context["response"]
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	enc.Encode(resp)
-	responseBytes := buf.Bytes()
 	hash := md5.New()
+	responseBytes, _ := json.Marshal(context["response"])
 	hash.Write(responseBytes)
 	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
 	log.Debug("Calculated etag: %s", etag)
