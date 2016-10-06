@@ -314,6 +314,7 @@ func NewServer(configFile string) (*Server, error) {
 			authURL = config.GetString("webui_config/auth_url", authURL)
 			webUIConfig := map[string]interface{}{
 				"authUrl": authURL,
+				"polling": config.GetBool("webui_config/polling", false),
 				"gohan": map[string]interface{}{
 					"schema": "/gohan/v0.1/schemas",
 					"url":    baseURL,
