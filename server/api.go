@@ -228,7 +228,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 				return
 			}
 			newEtag := calculateResponseEtag(context)
-			w.Header().Add("Long-Poll-Etag", newEtag)
+			w.Header().Add("Etag", newEtag)
 		}
 
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
@@ -259,7 +259,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 				return
 			}
 			newEtag := calculateResponseEtag(context)
-			w.Header().Add("Long-Poll-Etag", newEtag)
+			w.Header().Add("Etag", newEtag)
 		}
 
 		routes.ServeJson(w, context["response"])
@@ -418,18 +418,18 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 
 func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middleware.Context) {
 	etag := calculateResponseEtag(context)
-	if etag == r.Header.Get("Long-Poll-If-None-Match") {
-		log.Critical("Long-Poll %s - etags match, will wait", r.URL.Path)
+	key := r.URL.Path
+	if etag == r.Header.Get("Long-Poll-Resource-Hash") {
+		log.Critical("Long-Poll %s - hashes match, will wait", key)
 
-		key := r.URL.Path
 		dispatch := LongPollDispatch()
 		ch := dispatch.Register(key)
 
 		log.Critical("Waiting for %s", key)
 		<-ch
-		log.Critical("Woken up from %s", r.URL.Path)
+		log.Critical("Woken up from %s", key)
 	} else {
-		log.Critical("Long-Poll %s - responding immediately", r.URL.Path)
+		log.Critical("Long-Poll %s - responding immediately", key)
 	}
 }
 
@@ -438,7 +438,7 @@ func calculateResponseEtag(context middleware.Context) string {
 	responseBytes, _ := json.Marshal(context["response"])
 	hash.Write(responseBytes)
 	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
-	log.Debug("Calculated etag: %s", etag)
+	log.Critical("Calculated hash: %s", etag)
 	return etag
 }
 

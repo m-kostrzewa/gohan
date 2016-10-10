@@ -39,11 +39,9 @@ const (
 	configPrefix     = "/config/"
 	statePrefix      = "/state/"
 	monitoringPrefix = "/monitoring/"
-	longPollPrefix   = "/gohan/long_poll_notifications/"
 
-	eventPollingTime        = 30 * time.Second
-	eventPollingLimit       = 10000
-	longPollNotificationTTL = 10 // sec
+	eventPollingTime  = 30 * time.Second
+	eventPollingLimit = 10000
 
 	StateUpdateEventName      = "state_update"
 	MonitoringUpdateEventName = "monitoring_update"
@@ -57,101 +55,6 @@ func transactionCommitInformer() chan int {
 	}
 	return transactionCommited
 
-}
-
-var longPollDispatch *MessageDispatch
-
-func LongPollDispatch() *MessageDispatch {
-	if longPollDispatch == nil {
-		longPollDispatch = NewMessageDispatch(func(input string) string {
-			return input
-		})
-	}
-	return longPollDispatch
-}
-
-func notifyKeyUpdateSubscribers(fullKey string) error {
-
-	log.Critical("%s notifying START.", fullKey)
-	md := LongPollDispatch()
-	md.Send(fullKey)
-	log.Critical("%s notifying DONE.", fullKey)
-	return nil
-}
-
-//DbLongPollNotifierWrapper notifies long poll subscribers on modifying transactions (create/update/delete).
-type DbLongPollNotifierWrapper struct {
-	db.DB
-	gohan_sync.Sync
-}
-
-func (notifierWrapper *DbLongPollNotifierWrapper) Begin() (transaction.Transaction, error) {
-	tx, err := notifierWrapper.DB.Begin()
-	if err != nil {
-		return nil, err
-	}
-	return newTransactionLongPollNotifier(tx, notifierWrapper.Sync), nil
-}
-
-type transactionLongPollNotifier struct {
-	transaction.Transaction
-	sync         gohan_sync.Sync
-	resourcePath string
-}
-
-func newTransactionLongPollNotifier(tx transaction.Transaction, sync gohan_sync.Sync) *transactionLongPollNotifier {
-	return &transactionLongPollNotifier{tx, sync, ""}
-}
-
-func (notifier *transactionLongPollNotifier) Create(resource *schema.Resource) error {
-	if err := notifier.Transaction.Create(resource); err != nil {
-		return err
-	}
-	notifier.resourcePath = resource.Path()
-	return nil
-}
-
-func (notifier *transactionLongPollNotifier) Update(resource *schema.Resource) error {
-	if err := notifier.Transaction.Update(resource); err != nil {
-		return err
-	}
-	notifier.resourcePath = resource.Path()
-	return nil
-}
-
-func (notifier *transactionLongPollNotifier) Delete(s *schema.Schema, resourceID interface{}) error {
-	resource, err := notifier.Fetch(s, transaction.IDFilter(resourceID))
-	if err != nil {
-		return err
-	}
-	if err := notifier.Transaction.Delete(s, resourceID); err != nil {
-		return err
-	}
-	notifier.resourcePath = resource.Path()
-	return nil
-}
-
-func (notifier *transactionLongPollNotifier) Commit() error {
-	if err := notifier.Transaction.Commit(); err != nil {
-		return err
-	}
-	if err := addLongPollNotificationEntry(notifier.resourcePath, notifier.sync); err != nil {
-		return err
-	}
-	return nil
-}
-
-func addLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
-	postfix := strings.TrimPrefix(fullKey, statePrefix)
-	if postfix == "" {
-		return nil
-	}
-	path := longPollPrefix + postfix
-	log.Critical("addLongPollNotificationEntry path = %s", path)
-	if err := sync.UpdateTTL(path, "dummy", longPollNotificationTTL); err != nil {
-		return err
-	}
-	return nil
 }
 
 //DbSyncWrapper wraps db.DB so it logs events in database on every transaction.
