@@ -421,10 +421,9 @@ func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middlewar
 	if etag == r.Header.Get("Long-Poll-If-None-Match") {
 		log.Critical("Long-Poll %s - etags match, will wait", r.URL.Path)
 
-		ch := make(chan string)
 		key := r.URL.Path
 		dispatch := LongPollDispatch()
-		dispatch.Register(ch, key)
+		ch := dispatch.Register(key)
 
 		log.Critical("Waiting for %s", key)
 		<-ch

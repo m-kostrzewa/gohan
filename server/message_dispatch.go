@@ -44,10 +44,14 @@ func (md *MessageDispatch) dispatch() {
 	log.Info("[long_polling] starting")
 	for key := range md.input {
 		md.outputMutex.Lock()
-		datum := md.transform(key)
+		var datum *string
 		for _, parent := range getParentKeys(key) {
 			for _, client := range md.output[parent] {
-				client <- datum
+				if datum == nil {
+					transformed := md.transform(key)
+					datum = &transformed
+				}
+				client <- *datum
 				close(client)
 			}
 			md.output[parent] = nil
@@ -64,10 +68,9 @@ func (md *MessageDispatch) dispatch() {
 func getParentKeys(key string) []string {
 	keyParts := strings.Split(key, "/") // /key/subkey/subsubkey
 
-	parentKeys := make([]string, len(keyParts)-1)
-	parentKeys[0] = "/" + keyParts[1]
-	for i := 1; i < len(parentKeys); i++ {
-		parentKeys[i] = parentKeys[i-1] + "/" + keyParts[i+1]
+	parentKeys := make([]string, 0)
+	for i := 1; i < len(keyParts); i++ {
+		parentKeys = append(parentKeys, strings.Join(keyParts[:i+1], "/"))
 	}
 
 	return parentKeys
@@ -84,13 +87,17 @@ func (md *MessageDispatch) cleanup() {
 	}
 }
 
-func (md *MessageDispatch) Register(output chan string, key string) {
-	md.outputMutex.Lock()
+func (md *MessageDispatch) Register(key string) (output chan string) {
 	normalizedKey := normalizeKey(key)
+	output = make(chan string, 1)
+
+	md.outputMutex.Lock()
 	md.output[normalizedKey] = append(md.output[normalizedKey], output)
 	md.outputMutex.Unlock()
 
 	log.Debug("[long_polling] registered %s as %s", key, normalizedKey)
+
+	return
 }
 
 func normalizeKey(key string) string {

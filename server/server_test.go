@@ -1212,6 +1212,66 @@ var _ = Describe("Server package test", func() {
 			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key/child/key"))
 		})
+
+		It("should not block when child goroutine dies", func() {
+			test := NewMessageDispatchTest(identity)
+
+			consumerKeys := []string{"/key1", "/key2"}
+
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string){
+				if key == consumerKeys[1] {
+					datum := <- input
+					output <- datum
+				}
+				// the other consumer never receives from the input channel
+			})
+
+			test.sendMessages(consumerKeys)
+			test.closeMessageDispatch()
+
+			datum := <-test.channelsFromConsumers[1]
+			Expect(datum).To(Equal(consumerKeys[1]))
+		})
+
+		It("should call transform once per key", func() {
+			transformCalled := 0
+			test := NewMessageDispatchTest(func (input string) string{
+				transformCalled++
+				return input
+			})
+
+			consumerKeys := []string{"/key1", "/key1"}
+
+			test.startConsumers(consumerKeys, forwardingConsumer)
+
+			test.sendMessage("/key1")
+			test.closeMessageDispatch()
+
+			datum := <-test.channelsFromConsumers[1]
+			Expect(datum).To(Equal(consumerKeys[1]))
+
+			Expect(transformCalled).To(Equal(1))
+		})
+
+		It("should not call transform when no one is listening", func() {
+			transformCalled := 0
+			test := NewMessageDispatchTest(func (input string) string{
+				transformCalled++
+				return input
+			})
+
+
+			consumerKeys := []string{"/key1"}
+
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string){
+				// do nothing
+			})
+
+			test.sendMessage("/key2")
+			test.closeMessageDispatch()
+
+			Expect(transformCalled).To(Equal(0))
+		})
 	})
 })
 
@@ -1242,8 +1302,7 @@ func (test *MessageDispatchTest) startConsumersWithIds(consumerKeys []string, cu
 	consumerReady.Add(len(consumerKeys))
 
 	consumerGoroutine := func(output chan string, key string, id int, consumer ConsumerFunction) {
-		fromProducer := make(chan string)
-		test.messageDispatch.Register(fromProducer, key)
+		fromProducer := test.messageDispatch.Register(key)
 		consumerReady.Done()
 
 		consumer(key, id, fromProducer, output)
