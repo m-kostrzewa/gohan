@@ -17,6 +17,7 @@ package server
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/cloudwan/gohan/db"
 	"github.com/cloudwan/gohan/db/transaction"
@@ -30,13 +31,16 @@ const (
 )
 
 var longPollDispatch *MessageDispatch
+var initOnce sync.Once
+
+func initMessageDispatch() {
+	longPollDispatch = NewMessageDispatch(func(input string) string {
+		return input
+	})
+}
 
 func LongPollDispatch() *MessageDispatch {
-	if longPollDispatch == nil {
-		longPollDispatch = NewMessageDispatch(func(input string) string {
-			return input
-		})
-	}
+	initOnce.Do(initMessageDispatch)
 	return longPollDispatch
 }
 
