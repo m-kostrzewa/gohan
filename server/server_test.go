@@ -1097,7 +1097,7 @@ var _ = Describe("Server package test", func() {
 
 	Describe("Message dispatch", func() {
 		It("should work", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key"}
 
@@ -1110,24 +1110,8 @@ var _ = Describe("Server package test", func() {
 			Expect(datum).To(Equal("/key"))
 		})
 
-		It("should transform key", func() {
-			test := NewMessageDispatchTest(func(input string) string {
-				return "transformed"
-			})
-
-			consumerKeys := []string{"/key"}
-
-			test.startConsumers(consumerKeys, forwardingConsumer)
-
-			test.sendMessages(consumerKeys)
-			test.closeMessageDispatch()
-
-			datum := <-test.channelsFromConsumers[0]
-			Expect(datum).To(Equal("transformed"))
-		})
-
 		It("should normalize registered key", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"///key1//key2///"}
 
@@ -1141,7 +1125,7 @@ var _ = Describe("Server package test", func() {
 		})
 
 		It("should dispatch by key", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key2"}
 
@@ -1165,7 +1149,7 @@ var _ = Describe("Server package test", func() {
 		})
 
 		It("should dispatch to all listeners of a key", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key1"}
 			consumerIds := []int{0, 1}
@@ -1186,7 +1170,7 @@ var _ = Describe("Server package test", func() {
 		})
 
 		It("should close listener channels on close when no messages send", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1"}
 
@@ -1202,7 +1186,7 @@ var _ = Describe("Server package test", func() {
 		})
 
 		It("should notify about child key changes", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key"}
 
@@ -1216,7 +1200,7 @@ var _ = Describe("Server package test", func() {
 		})
 
 		It("should not block when child goroutine dies", func() {
-			test := NewMessageDispatchTest(identity)
+			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key2"}
 
@@ -1234,46 +1218,7 @@ var _ = Describe("Server package test", func() {
 			datum := <-test.channelsFromConsumers[1]
 			Expect(datum).To(Equal(consumerKeys[1]))
 		})
-
-		It("should call transform once per key", func() {
-			transformCalled := 0
-			test := NewMessageDispatchTest(func(input string) string {
-				transformCalled++
-				return input
-			})
-
-			consumerKeys := []string{"/key1", "/key1"}
-
-			test.startConsumers(consumerKeys, forwardingConsumer)
-
-			test.sendMessage("/key1")
-			test.closeMessageDispatch()
-
-			datum := <-test.channelsFromConsumers[1]
-			Expect(datum).To(Equal(consumerKeys[1]))
-
-			Expect(transformCalled).To(Equal(1))
-		})
-
-		It("should not call transform when no one is listening", func() {
-			transformCalled := 0
-			test := NewMessageDispatchTest(func(input string) string {
-				transformCalled++
-				return input
-			})
-
-			consumerKeys := []string{"/key1"}
-
-			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string) {
-				// do nothing
-			})
-
-			test.sendMessage("/key2")
-			test.closeMessageDispatch()
-
-			Expect(transformCalled).To(Equal(0))
-		})
-	})
+	})	
 
 	Describe("Long polling", func() {
 		const (
@@ -1430,9 +1375,8 @@ type MessageDispatchTest struct {
 	channelsFromConsumers []chan string
 }
 
-func NewMessageDispatchTest(transform func(string) string) MessageDispatchTest {
-	test := MessageDispatchTest{}
-	test.messageDispatch = srv.NewMessageDispatch(transform)
+func NewMessageDispatchTest() MessageDispatchTest {
+	test := MessageDispatchTest{srv.NewMessageDispatch(), nil}
 	return test
 }
 
@@ -1713,10 +1657,6 @@ func clearTable(tx transaction.Transaction, s *schema.Schema) error {
 		}
 	}
 	return nil
-}
-
-func identity(input string) string {
-	return input
 }
 
 func forwardingConsumer(key string, id int, input chan string, output chan string) {

@@ -34,9 +34,7 @@ var longPollDispatch *MessageDispatch
 var initOnce sync.Once
 
 func initMessageDispatch() {
-	longPollDispatch = NewMessageDispatch(func(input string) string {
-		return input
-	})
+	longPollDispatch = NewMessageDispatch()
 }
 
 func LongPollDispatch() *MessageDispatch {

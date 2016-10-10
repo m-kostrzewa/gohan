@@ -24,15 +24,13 @@ type MessageDispatch struct {
 	input       chan string
 	output      map[string][]chan string
 	outputMutex sync.Mutex
-	transform   func(string) string
 }
 
-func NewMessageDispatch(transform func(string) string) *MessageDispatch {
+func NewMessageDispatch() *MessageDispatch {
 	messageDispatch := MessageDispatch{
 		make(chan string),
 		make(map[string][]chan string),
 		sync.Mutex{},
-		transform,
 	}
 
 	go messageDispatch.dispatch()
@@ -44,14 +42,9 @@ func (md *MessageDispatch) dispatch() {
 	log.Info("[long_polling] starting")
 	for key := range md.input {
 		md.outputMutex.Lock()
-		var datum *string
 		for _, parent := range getParentKeys(key) {
 			for _, client := range md.output[parent] {
-				if datum == nil {
-					transformed := md.transform(key)
-					datum = &transformed
-				}
-				client <- *datum
+				client <- key
 				close(client)
 			}
 			md.output[parent] = nil
