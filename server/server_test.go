@@ -1096,7 +1096,7 @@ var _ = Describe("Server package test", func() {
 	})
 
 	Describe("Message dispatch", func() {
-		It("should work", func() {
+		It("should work", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key"}
@@ -1108,9 +1108,11 @@ var _ = Describe("Server package test", func() {
 
 			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key"))
+
+			close(done)
 		})
 
-		It("should normalize registered key", func() {
+		It("should normalize registered key", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"///key1//key2///"}
@@ -1122,9 +1124,11 @@ var _ = Describe("Server package test", func() {
 
 			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key1/key2"))
+
+			close(done)
 		})
 
-		It("should dispatch by key", func() {
+		It("should dispatch by key", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key2"}
@@ -1146,9 +1150,11 @@ var _ = Describe("Server package test", func() {
 				status := <-ch
 				Expect(status).To(Equal("ok"))
 			}
+
+			close(done)
 		})
 
-		It("should dispatch to all listeners of a key", func() {
+		It("should dispatch to all listeners of a key", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key1"}
@@ -1167,9 +1173,11 @@ var _ = Describe("Server package test", func() {
 				id := <-ch
 				Expect(id).To(Equal(strconv.Itoa(i)))
 			}
+
+			close(done)
 		})
 
-		It("should close listener channels on close when no messages send", func() {
+		It("should close listener channels on close when no messages send", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1"}
@@ -1183,9 +1191,11 @@ var _ = Describe("Server package test", func() {
 
 			messageReceived := <-test.channelsFromConsumers[0]
 			Expect(messageReceived).To(Equal("false"))
+
+			close(done)
 		})
 
-		It("should notify about child key changes", func() {
+		It("should notify about child key changes", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key"}
@@ -1197,9 +1207,11 @@ var _ = Describe("Server package test", func() {
 
 			datum := <-test.channelsFromConsumers[0]
 			Expect(datum).To(Equal("/key/child/key"))
+
+			close(done)
 		})
 
-		It("should not block when child goroutine dies", func() {
+		It("should not block when child goroutine dies", func(done Done) {
 			test := NewMessageDispatchTest()
 
 			consumerKeys := []string{"/key1", "/key2"}
@@ -1217,6 +1229,8 @@ var _ = Describe("Server package test", func() {
 
 			datum := <-test.channelsFromConsumers[1]
 			Expect(datum).To(Equal(consumerKeys[1]))
+
+			close(done)
 		})
 	})	
 
