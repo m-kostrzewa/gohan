@@ -18,14 +18,17 @@ package server
 import (
 	"strings"
 	"sync"
+
 	"github.com/cloudwan/gohan/server/middleware"
 )
 
+// MessageDispatch implements a thread-safe pub-sub mechanism. Subs wait on specified keys to be broadcasted on.
 type MessageDispatch struct {
 	groups map[string]*sync.Cond
-	mutex sync.Mutex
+	mutex  sync.Mutex
 }
 
+// NewNamedCond returns a new MessageDispatch object.
 func NewNamedCond() *MessageDispatch {
 	log.Info("[NamedCond] created")
 	md := MessageDispatch{}
@@ -33,6 +36,7 @@ func NewNamedCond() *MessageDispatch {
 	return &md
 }
 
+// Wait waits for specified key to be signaled.
 func (md *MessageDispatch) Wait(key string) {
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
@@ -53,6 +57,7 @@ func (md *MessageDispatch) waitLocked(key string) {
 	cond.Wait()
 }
 
+// GetOrWait compares hash of a resource with oldHash. If hashes match, will wait for corresponding resource path to be signaled. Otherwise, will return newly calculated hash immediately.
 func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
 	md.mutex.Lock()
 
@@ -78,6 +83,7 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 	return getHash(context), nil
 }
 
+// Broadcast signals all subs waiting for a specified key and cleans up.
 func (md *MessageDispatch) Broadcast(key string) {
 	log.Debug("[NamedCond] broadcasting %s", key)
 
@@ -93,6 +99,7 @@ func (md *MessageDispatch) Broadcast(key string) {
 	}
 }
 
+// Close broadcasts on all keys and cleans up.
 func (md *MessageDispatch) Close() {
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
@@ -104,11 +111,10 @@ func (md *MessageDispatch) Close() {
 	log.Info("[long_polling] NamedCond closed")
 }
 
-
 func getParentKeys(key string) []string {
 	keyParts := strings.Split(key, "/") // /key/subkey/subsubkey
 
-	parentKeys := make([]string, 0)
+	var parentKeys []string
 	for i := 1; i < len(keyParts); i++ {
 		parentKeys = append(parentKeys, strings.Join(keyParts[:i+1], "/"))
 	}

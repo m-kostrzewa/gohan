@@ -1346,10 +1346,7 @@ var _ = Describe("Server package test", func() {
 			_, err = testSync.Fetch("config/" + testNetworkResource.Path())
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = testSync.Fetch(longPollPrefix + testNetworkResource.Path())
-			Expect(err).To(HaveOccurred())
-
-			wrappedTestDB = &srv.DbLongPollNotifierWrapper{&srv.DbSyncWrapper{testDB}, testSync}
+			wrappedTestDB = &srv.DbLongPollNotifierWrapper{DB: &srv.DbSyncWrapper{DB: testDB}, Sync: testSync}
 
 			tx, err = wrappedTestDB.Begin()
 			Expect(err).ToNot(HaveOccurred(), "Failed to create transaction.")
@@ -1378,89 +1375,69 @@ var _ = Describe("Server package test", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		Context("with Long-Poll: not true", func() {
-			vals := [...]string{"asdfasdfasdf", "", "false", "True"}
-
-			It("should not long poll", func() {
-				for _, val := range vals {
-					_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, val, "", nil, http.StatusOK)
-					Expect(response.Header.Get("Etag")).To(Equal(""))
-				}
-
+		Context("without or with empty long polling header", func() {
+			It("should return immediately with resource etag", func() {
+				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", nil, http.StatusOK)
+				Expect(response.Header.Get(srv.LongPollEtag)).ToNot(Equal(""))
 			})
 		})
 
-		Context("with Long-Poll: true", func() {
-			const longPoll = "true"
-			var oldHash string
+		Context("with valid long polling header", func() {
+			var oldEtag string
 
 			BeforeEach(func() {
-				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "", nil, http.StatusOK)
-				oldHash = response.Header.Get("Etag")
+				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", nil, http.StatusOK)
+				oldEtag = response.Header.Get(srv.LongPollEtag)
 			})
 
-			Context("with no resource hash", func() {
-				It("should return immediately with resource hash", func() {
-					_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "", nil, http.StatusOK)
-					Expect(response.Header.Get("Etag")).ToNot(Equal(""))
-				})
+			It("should return immediately if versions are different with new version", func() {
+				var response *http.Response
+				ch := make(chan bool, 1)
+				go func() {
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "some-random-hash", nil, http.StatusOK)
+					ch <- true
+				}()
+
+				Eventually(ch, time.Second*10).Should(Receive())
+
+				newEtag := response.Header.Get(srv.LongPollEtag)
+				Expect(oldEtag).To(Equal(newEtag))
 			})
 
-			Context("with resource hash", func() {
-				It("should return immediately if hashes are different with new hash", func() {
-					var response *http.Response
-					ch := make(chan bool, 1)
-					go func() {
-						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "some-random-hash", nil, http.StatusOK)
-						ch <- true
-					}()
-					Eventually(ch, time.Second*10).Should(Receive())
-					Expect(oldHash).To(Equal(response.Header.Get("Etag")))
-				})
+			It("should hang if versions are same and return new version upon resource modification via Gohan API", func() {
+				var response *http.Response
+				ch := make(chan bool, 1)
+				go func() {
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, nil, http.StatusOK)
+					ch <- true
+				}()
+				Consistently(ch).ShouldNot(Receive())
 
-				It("should hang if hashes are same and return new hash upon modification via API", func() {
-					var response *http.Response
-					ch := make(chan bool, 1)
-					go func() {
-						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, oldHash, nil, http.StatusOK)
-						ch <- true
-					}()
-					Consistently(ch).ShouldNot(Receive())
+				networkUpdate := map[string]interface{}{
+					"name": "NetworkRed2",
+				}
+				testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
+				srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+				Eventually(ch, time.Second*10).Should(Receive())
 
-					networkUpdate := map[string]interface{}{
-						"name": "NetworkRed2",
-					}
-					testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
-					srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
-					Eventually(ch, time.Second*10).Should(Receive())
+				newEtag := response.Header.Get(srv.LongPollEtag)
+				Expect(oldEtag).ToNot(Equal(newEtag))
+			})
 
-					Expect(oldHash).ToNot(Equal(response.Header.Get("Etag")))
-				})
+			It("should hang if versions are same and return same version if there is notification but resource itself was not changed", func() {
+				var response *http.Response
+				ch := make(chan bool, 1)
+				go func() {
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, nil, http.StatusOK)
+					ch <- true
+				}()
+				Consistently(ch).ShouldNot(Receive())
 
-				It("should hang if hashes are same and return when state of resource is updated in etcd", func() {
-					var response *http.Response
-					ch := make(chan bool, 1)
-					go func() {
-						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, oldHash, nil, http.StatusOK)
-						ch <- true
-					}()
-					Consistently(ch).ShouldNot(Receive())
+				srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+				Eventually(ch, time.Second*10).Should(Receive())
 
-					possibleEvent := gohan_sync.Event{
-						Action: "this is ignored here",
-						Data: map[string]interface{}{
-							"version": float64(1),
-							"error":   "",
-							"state":   "Ni malvarmetas",
-						},
-						Key: statePrefix + testNetworkResource.Path(),
-					}
-
-					Expect(srv.StateUpdate(&possibleEvent, server)).To(Succeed())
-					srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
-					Eventually(ch, time.Second*10).Should(Receive())
-					// we don't expect hashes to be different this time because we're merely mocking a notification entry appearing in etcd, without actually inserting new content into the database.
-				})
+				newEtag := response.Header.Get(srv.LongPollEtag)
+				Expect(oldEtag).To(Equal(newEtag))
 			})
 		})
 
@@ -1665,10 +1642,9 @@ func testURLWithResponse(method, url, token string, postData interface{}, expect
 	return data, resp
 }
 
-func testLongPollURL(method, url, token, longPoll, resourceHash string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
+func testLongPollURL(method, url, token, longPoll string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
 	headers := make(map[string]string)
-	headers["Long-Poll"] = longPoll
-	headers["Long-Poll-Resource-Hash"] = resourceHash
+	headers[srv.LongPollHeader] = longPoll
 
 	data, resp := httpRequest(method, url, token, headers, postData)
 	jsonData, _ := json.MarshalIndent(data, "", "    ")
@@ -1690,7 +1666,6 @@ func httpRequest(method, url, token string, headers map[string]string, postData 
 		request.Header.Add(k, v)
 	}
 	request.Header.Set("X-Auth-Token", token)
-	fmt.Println(request.Header)
 	var data interface{}
 	resp, err := client.Do(request)
 	Expect(err).ToNot(HaveOccurred())

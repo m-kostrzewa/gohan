@@ -16,8 +16,6 @@
 package server
 
 import (
-	"crypto/md5"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -215,27 +213,25 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		addJSONContentTypeHeader(w)
 		fillInContext(context, dataStore, r, w, s, p, server.sync, identityService, server.queue)
 
-		if r.Header.Get("Long-Poll") == "true" {
-			oldHash := r.Header.Get("Long-Poll-Resource-Hash")
+		var newEtag string
+		var err error
+		if r.Header.Get(LongPollHeader) != "" {
+			oldEtag := r.Header.Get(LongPollHeader)
 			getResource := func(context middleware.Context) error {
 				return resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
 			}
-
 			longPoll := GetLongPoll()
-			newEtag, err := longPoll.GetOrWait(r.URL.Path, oldHash, context, getResource, calculateResponseEtag)
-			if err != nil {
-				handleError(w, err)
-				return
-			}
-
-			w.Header().Add("Etag", newEtag)
+			newEtag, err = longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
 		} else {
-			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
-				handleError(w, err)
-				return
-			}
+			err = resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
+			newEtag = calculateResponseEtag(context)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
 		}
 
+		w.Header().Add(LongPollEtag, newEtag)
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
 		routes.ServeJson(w, context["response"])
 	}
@@ -251,27 +247,25 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		fillInContext(context, dataStore, r, w, s, p, server.sync, identityService, server.queue)
 		id := p["id"]
 
-		if r.Header.Get("Long-Poll") == "true" {
-			oldHash := r.Header.Get("Long-Poll-Resource-Hash")
+		var newEtag string
+		var err error
+		if r.Header.Get(LongPollHeader) != "" {
+			oldEtag := r.Header.Get(LongPollHeader)
 			getResource := func(context middleware.Context) error {
 				return resources.GetSingleResource(context, dataStore, s, id)
 			}
-
 			longPoll := GetLongPoll()
-			newEtag, err := longPoll.GetOrWait(r.URL.Path, oldHash, context, getResource, calculateResponseEtag)
-			if err != nil {
-				handleError(w, err)
-				return
-			}
-
-			w.Header().Add("Etag", newEtag)
+			newEtag, err = longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
 		} else {
-			if err := resources.GetSingleResource(context, dataStore, s, id); err != nil {
-				handleError(w, err)
-				return
-			}
+			err = resources.GetSingleResource(context, dataStore, s, id)
+			newEtag = calculateResponseEtag(context)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
 		}
 
+		w.Header().Add(LongPollEtag, newEtag)
 		routes.ServeJson(w, context["response"])
 	}
 	route.Get(singleURL, middleware.Authorization(schema.ActionRead), getSingleFunc)
@@ -424,30 +418,6 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		}
 		route.AddRoute(action.Method, s.GetActionURL(action.Path), ActionFunc)
 	}
-}
-
-func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middleware.Context) {
-	etag := calculateResponseEtag(context)
-	key := r.URL.Path
-	if etag == r.Header.Get("Long-Poll-Resource-Hash") {
-		log.Critical("Long-Poll %s - hashes match, will wait", key)
-
-		log.Critical("Waiting for %s", key)
-		dispatch := GetLongPoll()
-		dispatch.Wait(key)
-		log.Critical("Woken up from %s", key)
-	} else {
-		log.Critical("Long-Poll %s - responding immediately", key)
-	}
-}
-
-func calculateResponseEtag(context middleware.Context) string {
-	hash := md5.New()
-	responseBytes, _ := json.Marshal(context["response"])
-	hash.Write(responseBytes)
-	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
-	log.Critical("Calculated hash: %s", etag)
-	return etag
 }
 
 //MapRouteBySchemas setup route for all loaded schema

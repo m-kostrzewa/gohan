@@ -680,13 +680,12 @@ func startLongPollWatchProcess(server *Server) {
 			response := <-responseChan
 			go func() {
 				// don't notify subs on "expire"
-				log.Critical("Long poll watch: %s %s %s", response.Action, response.Key, response.Data)
 				if response.Action == "create" || response.Action == "set" || response.Action == "update" {
 					path := "/" + strings.TrimPrefix(response.Key, longPollPrefix)
 					if err := NotifyKeyUpdateSubscribers(path); err != nil {
-						log.Warning(fmt.Sprintf("error during key subscribers notification (long polling): %s", err))
+						log.Warning(fmt.Sprintf("Error during key subscribers notification (long polling): %s", err))
 					}
-					log.Info("Completed long poll key subscribers notification")
+					log.Debug("[Sync/Long polling] Notified from etcd watch.")
 				}
 			}()
 		}
