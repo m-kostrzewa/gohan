@@ -21,42 +21,60 @@ import (
 )
 
 type MessageDispatch struct {
-	input       chan string
-	output      map[string][]chan string
-	outputMutex sync.Mutex
+	groups map[string]*sync.Cond
+	mutex sync.Mutex
 }
 
-func NewMessageDispatch() *MessageDispatch {
-	messageDispatch := MessageDispatch{
-		make(chan string),
-		make(map[string][]chan string),
-		sync.Mutex{},
+func NewNamedCond() *MessageDispatch {
+	log.Info("[NamedCond] created")
+	nc := MessageDispatch{}
+	nc.groups = make(map[string]*sync.Cond)
+	return &nc
+}
+
+func (nc *MessageDispatch) Wait(key string) {
+	normalizedKey := normalizeKey(key)
+	log.Debug("[NamedCond] registered %s as %s", key, normalizedKey)
+
+	nc.mutex.Lock()
+	defer nc.mutex.Unlock()
+
+	cond, ok := nc.groups[normalizedKey]
+	if !ok {
+		cond = sync.NewCond(&nc.mutex)
+		nc.groups[normalizedKey] = cond
 	}
 
-	go messageDispatch.dispatch()
-
-	return &messageDispatch
+	cond.Wait()
 }
 
-func (md *MessageDispatch) dispatch() {
-	log.Info("[long_polling] starting")
-	for key := range md.input {
-		md.outputMutex.Lock()
-		for _, parent := range getParentKeys(key) {
-			for _, client := range md.output[parent] {
-				client <- key
-				close(client)
-			}
-			md.output[parent] = nil
+func (nc *MessageDispatch) Broadcast(key string) {
+	log.Debug("[NamedCond] broadcasting %s", key)
+
+	nc.mutex.Lock()
+	defer nc.mutex.Unlock()
+
+	for _, parent := range getParentKeys(key) {
+		cond, ok := nc.groups[parent]
+		if ok {
+			cond.Broadcast()
+			delete(nc.groups, parent)
 		}
-		md.outputMutex.Unlock()
 	}
 
-	md.outputMutex.Lock()
-	md.cleanup()
-	md.outputMutex.Unlock()
-	log.Info("[long_polling] closed")
 }
+
+func (nc *MessageDispatch) Close() {
+	nc.mutex.Lock()
+	defer nc.mutex.Unlock()
+
+	for _, cond := range nc.groups {
+		cond.Broadcast()
+	}
+
+	log.Info("[long_polling] NamedCond closed")
+}
+
 
 func getParentKeys(key string) []string {
 	keyParts := strings.Split(key, "/") // /key/subkey/subsubkey
@@ -69,30 +87,6 @@ func getParentKeys(key string) []string {
 	return parentKeys
 }
 
-func (md *MessageDispatch) cleanup() {
-	log.Debug("[long_polling] cleanup")
-	for key, channels := range md.output {
-		for _, ch := range channels {
-			close(ch)
-		}
-		log.Debug("[long_polling] channels closed for %s", key)
-		md.output[key] = nil
-	}
-}
-
-func (md *MessageDispatch) Register(key string) (output chan string) {
-	normalizedKey := normalizeKey(key)
-	output = make(chan string, 1)
-
-	md.outputMutex.Lock()
-	md.output[normalizedKey] = append(md.output[normalizedKey], output)
-	md.outputMutex.Unlock()
-
-	log.Debug("[long_polling] registered %s as %s", key, normalizedKey)
-
-	return
-}
-
 func normalizeKey(key string) string {
 	keyParts := strings.Split(key, "/")
 	normalizedKey := ""
@@ -103,13 +97,4 @@ func normalizeKey(key string) string {
 		normalizedKey += "/" + part
 	}
 	return normalizedKey
-}
-
-func (md *MessageDispatch) Send(key string) {
-	md.input <- key
-}
-
-func (md *MessageDispatch) Close() {
-	log.Info("[long_polling] close requested")
-	close(md.input)
 }

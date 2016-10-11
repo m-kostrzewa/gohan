@@ -34,7 +34,7 @@ var longPollDispatch *MessageDispatch
 var initOnce sync.Once
 
 func initMessageDispatch() {
-	longPollDispatch = NewMessageDispatch()
+	longPollDispatch = NewNamedCond()
 }
 
 func LongPollDispatch() *MessageDispatch {
@@ -46,7 +46,7 @@ func notifyKeyUpdateSubscribers(fullKey string) error {
 
 	log.Critical("%s notifying START.", fullKey)
 	md := LongPollDispatch()
-	md.Send(fullKey)
+	md.Broadcast(fullKey)
 	log.Critical("%s notifying DONE.", fullKey)
 	return nil
 }

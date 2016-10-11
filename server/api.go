@@ -422,11 +422,9 @@ func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middlewar
 	if etag == r.Header.Get("Long-Poll-Resource-Hash") {
 		log.Critical("Long-Poll %s - hashes match, will wait", key)
 
-		dispatch := LongPollDispatch()
-		ch := dispatch.Register(key)
-
 		log.Critical("Waiting for %s", key)
-		<-ch
+		dispatch := LongPollDispatch()
+		dispatch.Wait(key)
 		log.Critical("Woken up from %s", key)
 	} else {
 		log.Critical("Long-Poll %s - responding immediately", key)
