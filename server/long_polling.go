@@ -37,12 +37,14 @@ func initMessageDispatch() {
 	longPollDispatch = NewNamedCond()
 }
 
+// GetLongPoll returns singleton MessageDispatch
 func GetLongPoll() *MessageDispatch {
 	initOnce.Do(initMessageDispatch)
 	return longPollDispatch
 }
 
-func notifyKeyUpdateSubscribers(fullKey string) error {
+// NotifyKeyUpdateSubscribers signals all goroutines waiting for an update of specified key.
+func NotifyKeyUpdateSubscribers(fullKey string) error {
 
 	log.Critical("%s notifying START.", fullKey)
 	md := GetLongPoll()
@@ -108,13 +110,14 @@ func (notifier *transactionLongPollNotifier) Commit() error {
 	if err := notifier.Transaction.Commit(); err != nil {
 		return err
 	}
-	if err := addLongPollNotificationEntry(notifier.resourcePath, notifier.sync); err != nil {
+	if err := AddLongPollNotificationEntry(notifier.resourcePath, notifier.sync); err != nil {
 		return err
 	}
 	return nil
 }
 
-func addLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
+// AddLongPollNotificationEntry creates an entry in etcd under longPollPrefix/path/to/resource with a specified time to live.
+func AddLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
 	postfix := strings.TrimPrefix(fullKey, statePrefix)
 	if postfix == "" {
 		return nil

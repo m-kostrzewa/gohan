@@ -17,7 +17,6 @@ package server_test
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -33,11 +33,10 @@ import (
 	"github.com/cloudwan/gohan/db/transaction"
 	"github.com/cloudwan/gohan/schema"
 	srv "github.com/cloudwan/gohan/server"
+	"github.com/cloudwan/gohan/server/middleware"
 	gohan_sync "github.com/cloudwan/gohan/sync"
 	gohan_etcd "github.com/cloudwan/gohan/sync/etcd"
 	"github.com/cloudwan/gohan/util"
-	"time"
-	"github.com/cloudwan/gohan/server/middleware"
 )
 
 var (
@@ -239,7 +238,7 @@ var _ = Describe("Server package test", func() {
 			Expect(networks).To(HaveLen(1))
 			Expect(n0).To(HaveKeyWithValue("id", "networkblue"))
 
-			result, resp := httpRequest("GET", networkPluralURL+"?limit=1&offset=1", adminTokenID, nil)
+			result, resp := httpRequest("GET", networkPluralURL+"?limit=1&offset=1", adminTokenID, nil, nil)
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			res = result.(map[string]interface{})
 			networks = res["networks"].([]interface{})
@@ -1323,7 +1322,6 @@ var _ = Describe("Server package test", func() {
 			testSync            gohan_sync.Sync
 			testNetwork         map[string]interface{}
 			testNetworkResource *schema.Resource
-			possibleEvent       gohan_sync.Event
 		)
 
 		BeforeEach(func() {
@@ -1348,6 +1346,9 @@ var _ = Describe("Server package test", func() {
 			_, err = testSync.Fetch("config/" + testNetworkResource.Path())
 			Expect(err).ToNot(HaveOccurred())
 
+			_, err = testSync.Fetch(longPollPrefix + testNetworkResource.Path())
+			Expect(err).To(HaveOccurred())
+
 			wrappedTestDB = &srv.DbLongPollNotifierWrapper{&srv.DbSyncWrapper{testDB}, testSync}
 
 			tx, err = wrappedTestDB.Begin()
@@ -1368,8 +1369,13 @@ var _ = Describe("Server package test", func() {
 		})
 
 		AfterEach(func() {
-			err := testSync.Delete(longPollPrefix + testNetworkResource.Path())
-			Expect(err).ToNot(HaveOccurred())
+			_, err := testSync.Fetch(longPollPrefix + testNetworkResource.Path())
+			if err == nil {
+				err = testSync.Delete(longPollPrefix + testNetworkResource.Path())
+				Expect(err).ToNot(HaveOccurred())
+				_, err = testSync.Fetch(longPollPrefix + testNetworkResource.Path())
+			}
+			Expect(err).To(HaveOccurred())
 		})
 
 		Context("with Long-Poll: not true", func() {
@@ -1386,6 +1392,12 @@ var _ = Describe("Server package test", func() {
 
 		Context("with Long-Poll: true", func() {
 			const longPoll = "true"
+			var oldHash string
+
+			BeforeEach(func() {
+				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "", nil, http.StatusOK)
+				oldHash = response.Header.Get("Etag")
+			})
 
 			Context("with no resource hash", func() {
 				It("should return immediately with resource hash", func() {
@@ -1396,24 +1408,21 @@ var _ = Describe("Server package test", func() {
 
 			Context("with resource hash", func() {
 				It("should return immediately if hashes are different with new hash", func() {
-					firstHash := digestJson(testNetwork)
-					var response interface{}
+					var response *http.Response
 					ch := make(chan bool, 1)
 					go func() {
 						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "some-random-hash", nil, http.StatusOK)
 						ch <- true
 					}()
-					Eventually(ch).Should(Receive())
-					secondHash := digestJson(response)
-					Expect(firstHash).ToNot(Equal(secondHash))
+					Eventually(ch, time.Second*10).Should(Receive())
+					Expect(oldHash).To(Equal(response.Header.Get("Etag")))
 				})
 
 				It("should hang if hashes are same and return new hash upon modification via API", func() {
-					firstHash := digestJson(testNetwork)
-					var response interface{}
+					var response *http.Response
 					ch := make(chan bool, 1)
 					go func() {
-						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, firstHash, nil, http.StatusOK)
+						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, oldHash, nil, http.StatusOK)
 						ch <- true
 					}()
 					Consistently(ch).ShouldNot(Receive())
@@ -1422,23 +1431,22 @@ var _ = Describe("Server package test", func() {
 						"name": "NetworkRed2",
 					}
 					testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
-					Eventually(ch).Should(Receive())
+					srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+					Eventually(ch, time.Second*10).Should(Receive())
 
-					secondHash := digestJson(response)
-					Expect(firstHash).ToNot(Equal(secondHash))
+					Expect(oldHash).ToNot(Equal(response.Header.Get("Etag")))
 				})
 
-				It("should hang if hashes are same and return new hash upon modification via state update", func() {
-					firstHash := digestJson(testNetwork)
-					var response interface{}
+				It("should hang if hashes are same and return when state of resource is updated in etcd", func() {
+					var response *http.Response
 					ch := make(chan bool, 1)
 					go func() {
-						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, firstHash, nil, http.StatusOK)
+						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, oldHash, nil, http.StatusOK)
 						ch <- true
 					}()
 					Consistently(ch).ShouldNot(Receive())
 
-					possibleEvent = gohan_sync.Event{
+					possibleEvent := gohan_sync.Event{
 						Action: "this is ignored here",
 						Data: map[string]interface{}{
 							"version": float64(1),
@@ -1449,12 +1457,10 @@ var _ = Describe("Server package test", func() {
 					}
 
 					Expect(srv.StateUpdate(&possibleEvent, server)).To(Succeed())
-
-					Eventually(ch).Should(Receive())
-					secondHash := digestJson(response)
-					Expect(firstHash).ToNot(Equal(secondHash))
+					srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+					Eventually(ch, time.Second*10).Should(Receive())
+					// we don't expect hashes to be different this time because we're merely mocking a notification entry appearing in etcd, without actually inserting new content into the database.
 				})
-
 			})
 		})
 
@@ -1523,7 +1529,7 @@ func BenchmarkPOSTAPI(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		network := getNetwork("red"+strconv.Itoa(i), "red")
-		httpRequest("POST", networkPluralURL, adminTokenID, network)
+		httpRequest("POST", networkPluralURL, adminTokenID, nil, network)
 	}
 }
 
@@ -1539,11 +1545,11 @@ func BenchmarkGETAPI(b *testing.B) {
 	}
 
 	network := getNetwork("red", "red")
-	httpRequest("POST", networkPluralURL, adminTokenID, network)
+	httpRequest("POST", networkPluralURL, adminTokenID, nil, network)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		httpRequest("GET", getNetworkSingularURL("red"), adminTokenID, nil)
+		httpRequest("GET", getNetworkSingularURL("red"), adminTokenID, nil, nil)
 	}
 }
 
@@ -1646,40 +1652,31 @@ func getSubnetFullPluralURL(networkColor string) string {
 }
 
 func testURL(method, url, token string, postData interface{}, expectedCode int) interface{} {
-	data, resp := httpRequest(method, url, token, postData)
+	data, resp := httpRequest(method, url, token, nil, postData)
 	jsonData, _ := json.MarshalIndent(data, "", "    ")
 	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
 	return data
 }
 
-func httpRequest(method, url, token string, postData interface{}) (interface{}, *http.Response) {
-	client := &http.Client{}
-	var reader io.Reader
-	if postData != nil {
-		jsonByte, err := json.Marshal(postData)
-		Expect(err).ToNot(HaveOccurred())
-		reader = bytes.NewBuffer(jsonByte)
-	}
-	request, err := http.NewRequest(method, url, reader)
-	Expect(err).ToNot(HaveOccurred())
-	request.Header.Set("X-Auth-Token", token)
-	var data interface{}
-	resp, err := client.Do(request)
-	Expect(err).ToNot(HaveOccurred())
-	defer resp.Body.Close()
-	decoder := json.NewDecoder(resp.Body)
-	decoder.Decode(&data)
-	return data, resp
-}
-
-func testLongPollURL(method, url, token, longPoll, resourceHash string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
-	data, resp := longPollHttpRequest(method, url, token, longPoll, resourceHash, postData)
+func testURLWithResponse(method, url, token string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
+	data, resp := httpRequest(method, url, token, nil, postData)
 	jsonData, _ := json.MarshalIndent(data, "", "    ")
 	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
 	return data, resp
 }
 
-func longPollHttpRequest(method, url, token, longPoll, resourceHash string, postData interface{}) (interface{}, *http.Response) {
+func testLongPollURL(method, url, token, longPoll, resourceHash string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
+	headers := make(map[string]string)
+	headers["Long-Poll"] = longPoll
+	headers["Long-Poll-Resource-Hash"] = resourceHash
+
+	data, resp := httpRequest(method, url, token, headers, postData)
+	jsonData, _ := json.MarshalIndent(data, "", "    ")
+	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
+	return data, resp
+}
+
+func httpRequest(method, url, token string, headers map[string]string, postData interface{}) (interface{}, *http.Response) {
 	client := &http.Client{}
 	var reader io.Reader
 	if postData != nil {
@@ -1689,9 +1686,11 @@ func longPollHttpRequest(method, url, token, longPoll, resourceHash string, post
 	}
 	request, err := http.NewRequest(method, url, reader)
 	Expect(err).ToNot(HaveOccurred())
+	for k, v := range headers {
+		request.Header.Add(k, v)
+	}
 	request.Header.Set("X-Auth-Token", token)
-	request.Header.Add("Long-Poll", longPoll)
-	request.Header.Add("Long-Poll-Resource-Hash", resourceHash)
+	fmt.Println(request.Header)
 	var data interface{}
 	resp, err := client.Do(request)
 	Expect(err).ToNot(HaveOccurred())
@@ -1699,14 +1698,6 @@ func longPollHttpRequest(method, url, token, longPoll, resourceHash string, post
 	decoder := json.NewDecoder(resp.Body)
 	decoder.Decode(&data)
 	return data, resp
-}
-
-func digestJson(data interface{}) string {
-	hash := md5.New()
-	responseBytes, _ := json.Marshal(data)
-	hash.Write(responseBytes)
-	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
-	return etag
 }
 
 func clearTable(tx transaction.Transaction, s *schema.Schema) error {

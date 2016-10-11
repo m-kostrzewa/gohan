@@ -530,7 +530,7 @@ func startStateUpdatingProcess(server *Server) {
 				if err != nil {
 					log.Warning(fmt.Sprintf("error during state update: %s", err))
 				}
-				addLongPollNotificationEntry(response.Key, server.sync)
+				AddLongPollNotificationEntry(response.Key, server.sync)
 				log.Info("Completed StateUpdate")
 			}()
 		}
@@ -683,7 +683,7 @@ func startLongPollWatchProcess(server *Server) {
 				log.Critical("Long poll watch: %s %s %s", response.Action, response.Key, response.Data)
 				if response.Action == "create" || response.Action == "set" || response.Action == "update" {
 					path := "/" + strings.TrimPrefix(response.Key, longPollPrefix)
-					if err := notifyKeyUpdateSubscribers(path); err != nil {
+					if err := NotifyKeyUpdateSubscribers(path); err != nil {
 						log.Warning(fmt.Sprintf("error during key subscribers notification (long polling): %s", err))
 					}
 					log.Info("Completed long poll key subscribers notification")
