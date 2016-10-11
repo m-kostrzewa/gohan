@@ -17,6 +17,7 @@ package server_test
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
+	"sync"
+
 	"github.com/cloudwan/gohan/db"
 	"github.com/cloudwan/gohan/db/transaction"
 	"github.com/cloudwan/gohan/schema"
@@ -35,7 +38,6 @@ import (
 	gohan_sync "github.com/cloudwan/gohan/sync"
 	gohan_etcd "github.com/cloudwan/gohan/sync/etcd"
 	"github.com/cloudwan/gohan/util"
-	"sync"
 )
 
 var (
@@ -1218,9 +1220,9 @@ var _ = Describe("Server package test", func() {
 
 			consumerKeys := []string{"/key1", "/key2"}
 
-			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string){
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string) {
 				if key == consumerKeys[1] {
-					datum := <- input
+					datum := <-input
 					output <- datum
 				}
 				// the other consumer never receives from the input channel
@@ -1235,7 +1237,7 @@ var _ = Describe("Server package test", func() {
 
 		It("should call transform once per key", func() {
 			transformCalled := 0
-			test := NewMessageDispatchTest(func (input string) string{
+			test := NewMessageDispatchTest(func(input string) string {
 				transformCalled++
 				return input
 			})
@@ -1255,15 +1257,14 @@ var _ = Describe("Server package test", func() {
 
 		It("should not call transform when no one is listening", func() {
 			transformCalled := 0
-			test := NewMessageDispatchTest(func (input string) string{
+			test := NewMessageDispatchTest(func(input string) string {
 				transformCalled++
 				return input
 			})
 
-
 			consumerKeys := []string{"/key1"}
 
-			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string){
+			test.startConsumers(consumerKeys, func(key string, id int, input chan string, output chan string) {
 				// do nothing
 			})
 
@@ -1272,6 +1273,155 @@ var _ = Describe("Server package test", func() {
 
 			Expect(transformCalled).To(Equal(0))
 		})
+	})
+
+	Describe("Long polling", func() {
+		const (
+			statePrefix             = "/state"
+			longPollPrefix          = "/gohan/long_poll_notifications/"
+			longPollNotificationTTL = 10 // sec
+		)
+		var (
+			// networkSchema   *schema.Schema
+			wrappedTestDB       db.DB
+			testSync            gohan_sync.Sync
+			testNetwork         map[string]interface{}
+			testNetworkResource *schema.Resource
+			possibleEvent       gohan_sync.Event
+		)
+
+		BeforeEach(func() {
+			manager := schema.GetManager()
+			_, ok := manager.Schema("network")
+			Expect(ok).To(BeTrue())
+			testNetwork = getNetwork("red", "red")
+			var err error
+			testNetworkResource, err = manager.LoadResource("network", testNetwork)
+			Expect(err).ToNot(HaveOccurred())
+
+			tempDB := &srv.DbSyncWrapper{DB: testDB}
+			tx, err := tempDB.Begin()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tx.Create(testNetworkResource)).To(Succeed())
+			Expect(tx.Commit()).To(Succeed())
+			tx.Close()
+
+			Expect(server.Sync()).To(Succeed())
+
+			testSync = gohan_etcd.NewSync(nil)
+			_, err = testSync.Fetch("config/" + testNetworkResource.Path())
+			Expect(err).ToNot(HaveOccurred())
+
+			wrappedTestDB = &srv.DbLongPollNotifierWrapper{&srv.DbSyncWrapper{testDB}, testSync}
+
+			tx, err = wrappedTestDB.Begin()
+			Expect(err).ToNot(HaveOccurred(), "Failed to create transaction.")
+			defer tx.Close()
+			for _, schema := range schema.GetManager().Schemas() {
+				if whitelist[schema.ID] {
+					continue
+				}
+				err = clearTable(tx, schema)
+				Expect(err).ToNot(HaveOccurred(), "Failed to clear table.")
+			}
+			err = tx.Commit()
+			Expect(err).ToNot(HaveOccurred(), "Failed to commit transaction.")
+
+			response := testURL("POST", networkPluralURL, adminTokenID, testNetwork, http.StatusCreated)
+			Expect(response).To(HaveKeyWithValue("network", util.MatchAsJSON(testNetwork)))
+		})
+
+		AfterEach(func() {
+			err := testSync.Delete(longPollPrefix + testNetworkResource.Path())
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		Context("with Long-Poll: not true", func() {
+			vals := [...]string{"asdfasdfasdf", "", "false", "True"}
+
+			It("should not long poll", func() {
+				for _, val := range vals {
+					_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, val, "", nil, http.StatusOK)
+					Expect(response.Header.Get("Etag")).To(Equal(""))
+				}
+
+			})
+		})
+
+		Context("with Long-Poll: true", func() {
+			const longPoll = "true"
+
+			Context("with no resource hash", func() {
+				It("should return immediately with resource hash", func() {
+					_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "", nil, http.StatusOK)
+					Expect(response.Header.Get("Etag")).ToNot(Equal(""))
+				})
+			})
+
+			Context("with resource hash", func() {
+				It("should return immediately if hashes are different with new hash", func() {
+					firstHash := digestJson(testNetwork)
+					var response interface{}
+					ch := make(chan bool, 1)
+					go func() {
+						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, "some-random-hash", nil, http.StatusOK)
+						ch <- true
+					}()
+					Eventually(ch).Should(Receive())
+					secondHash := digestJson(response)
+					Expect(firstHash).ToNot(Equal(secondHash))
+				})
+
+				It("should hang if hashes are same and return new hash upon modification via API", func() {
+					firstHash := digestJson(testNetwork)
+					var response interface{}
+					ch := make(chan bool, 1)
+					go func() {
+						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, firstHash, nil, http.StatusOK)
+						ch <- true
+					}()
+					Consistently(ch).ShouldNot(Receive())
+
+					networkUpdate := map[string]interface{}{
+						"name": "NetworkRed2",
+					}
+					testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
+					Eventually(ch).Should(Receive())
+
+					secondHash := digestJson(response)
+					Expect(firstHash).ToNot(Equal(secondHash))
+				})
+
+				It("should hang if hashes are same and return new hash upon modification via state update", func() {
+					firstHash := digestJson(testNetwork)
+					var response interface{}
+					ch := make(chan bool, 1)
+					go func() {
+						_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, longPoll, firstHash, nil, http.StatusOK)
+						ch <- true
+					}()
+					Consistently(ch).ShouldNot(Receive())
+
+					possibleEvent = gohan_sync.Event{
+						Action: "this is ignored here",
+						Data: map[string]interface{}{
+							"version": float64(1),
+							"error":   "",
+							"state":   "Ni malvarmetas",
+						},
+						Key: statePrefix + testNetworkResource.Path(),
+					}
+
+					Expect(srv.StateUpdate(&possibleEvent, server)).To(Succeed())
+
+					Eventually(ch).Should(Receive())
+					secondHash := digestJson(response)
+					Expect(firstHash).ToNot(Equal(secondHash))
+				})
+
+			})
+		})
+
 	})
 })
 
@@ -1492,6 +1642,43 @@ func httpRequest(method, url, token string, postData interface{}) (interface{}, 
 	decoder := json.NewDecoder(resp.Body)
 	decoder.Decode(&data)
 	return data, resp
+}
+
+func testLongPollURL(method, url, token, longPoll, resourceHash string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
+	data, resp := longPollHttpRequest(method, url, token, longPoll, resourceHash, postData)
+	jsonData, _ := json.MarshalIndent(data, "", "    ")
+	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
+	return data, resp
+}
+
+func longPollHttpRequest(method, url, token, longPoll, resourceHash string, postData interface{}) (interface{}, *http.Response) {
+	client := &http.Client{}
+	var reader io.Reader
+	if postData != nil {
+		jsonByte, err := json.Marshal(postData)
+		Expect(err).ToNot(HaveOccurred())
+		reader = bytes.NewBuffer(jsonByte)
+	}
+	request, err := http.NewRequest(method, url, reader)
+	Expect(err).ToNot(HaveOccurred())
+	request.Header.Set("X-Auth-Token", token)
+	request.Header.Add("Long-Poll", longPoll)
+	request.Header.Add("Long-Poll-Resource-Hash", resourceHash)
+	var data interface{}
+	resp, err := client.Do(request)
+	Expect(err).ToNot(HaveOccurred())
+	defer resp.Body.Close()
+	decoder := json.NewDecoder(resp.Body)
+	decoder.Decode(&data)
+	return data, resp
+}
+
+func digestJson(data interface{}) string {
+	hash := md5.New()
+	responseBytes, _ := json.Marshal(data)
+	hash.Write(responseBytes)
+	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
+	return etag
 }
 
 func clearTable(tx transaction.Transaction, s *schema.Schema) error {
