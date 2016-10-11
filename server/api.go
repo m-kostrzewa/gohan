@@ -216,7 +216,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		fillInContext(context, dataStore, r, w, s, p, server.sync, identityService, server.queue)
 
 		if r.Header.Get("Long-Poll") == "true" {
-			oldHash := calculateResponseEtag(context)
+			oldHash := r.Header.Get("Long-Poll-Resource-Hash")
 			getResource := func(context middleware.Context) error {
 				return resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
 			}
@@ -252,7 +252,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		id := p["id"]
 
 		if r.Header.Get("Long-Poll") == "true" {
-			oldHash := calculateResponseEtag(context)
+			oldHash := r.Header.Get("Long-Poll-Resource-Hash")
 			getResource := func(context middleware.Context) error {
 				return resources.GetSingleResource(context, dataStore, s, id)
 			}
