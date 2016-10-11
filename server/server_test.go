@@ -37,6 +37,7 @@ import (
 	gohan_etcd "github.com/cloudwan/gohan/sync/etcd"
 	"github.com/cloudwan/gohan/util"
 	"time"
+	"github.com/cloudwan/gohan/server/middleware"
 )
 
 var (
@@ -1222,9 +1223,95 @@ var _ = Describe("Server package test", func() {
 
 			close(done)
 		})
+
+		It("should not wait if hashes differ", func(done Done) {
+			test := NewMessageDispatchTest()
+
+			consumerKeys := []string{"/key"}
+
+			const firstHash = "firstHash"
+			const secondHash = "secondHash"
+			const expectedData = "dummy"
+			getResourceCalled := 0
+			context := middleware.Context{}
+
+			test.startConsumers(consumerKeys, func(key string, id int, dispatch *srv.MessageDispatch, output chan string) {
+				getHash := func(context middleware.Context) string {
+					return secondHash
+				}
+
+				getResource := func(context middleware.Context) error {
+					getResourceCalled++
+					context["response"] = expectedData
+					return nil
+				}
+
+				newHash, _ := dispatch.GetOrWait(key, firstHash, context, getResource, getHash)
+				output <- newHash
+			})
+
+			datum := <-test.channelsFromConsumers[0]
+			Expect(datum).To(Equal("secondHash"))
+			Expect(getResourceCalled).To(Equal(1))
+
+			close(done)
+
+			// ensure no broadcasts sent
+			test.closeMessageDispatch()
+		})
+
+		It("should wait if hash is the same", func(done Done) {
+			test := NewMessageDispatchTest()
+
+			consumerKeys := []string{"/key"}
+
+			const firstHash = "firstHash"
+			const secondHash = "secondHash"
+			const expectedData = "dummy"
+			getResourceCalled := 0
+			getHashCalled := 0
+			context := middleware.Context{}
+
+			test.startConsumers(consumerKeys, func(key string, id int, dispatch *srv.MessageDispatch, output chan string) {
+				getHash := func(context middleware.Context) string {
+					getHashCalled++
+					if getHashCalled == 1 {
+						return firstHash
+					} else {
+						return secondHash
+					}
+				}
+
+				getResource := func(context middleware.Context) error {
+					getResourceCalled++
+					if getResourceCalled == 1 {
+						context["response"] = "old response, should be overwritten"
+					} else {
+						context["response"] = expectedData
+					}
+
+					return nil
+				}
+
+				newHash, _ := dispatch.GetOrWait(key, firstHash, context, getResource, getHash)
+				output <- newHash
+			})
+
+			test.sendMessage("/key")
+
+			hash := <-test.channelsFromConsumers[0]
+			Expect(hash).To(Equal("secondHash"))
+			Expect(context["response"]).To(Equal(expectedData))
+			Expect(getResourceCalled).To(Equal(2))
+			Expect(getHashCalled).To(Equal(2))
+
+			close(done)
+
+			test.closeMessageDispatch()
+		})
 	})
 
-	/*Describe("Long polling", func() {
+	Describe("Long polling", func() {
 		const (
 			statePrefix             = "/state"
 			longPollPrefix          = "/gohan/long_poll_notifications/"
@@ -1371,7 +1458,7 @@ var _ = Describe("Server package test", func() {
 			})
 		})
 
-	})*/
+	})
 })
 
 type MessageDispatchTest struct {

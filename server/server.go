@@ -386,6 +386,7 @@ func (server *Server) Stop() {
 	stopSNMPProcess(server)
 	stopCRONProcess(server)
 	manners.Close()
+	GetLongPoll().Close()
 	server.queue.Stop()
 }
 

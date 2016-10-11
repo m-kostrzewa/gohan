@@ -630,7 +630,7 @@ func startSyncWatchProcess(server *Server) {
 			}
 		}(path)
 	}
-	//main response lisnter process
+	//main response listener process
 	go func() {
 		defer util.LogFatalPanic(log)
 		for server.running {

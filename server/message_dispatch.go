@@ -18,6 +18,7 @@ package server
 import (
 	"strings"
 	"sync"
+	"github.com/cloudwan/gohan/server/middleware"
 )
 
 type MessageDispatch struct {
@@ -27,48 +28,76 @@ type MessageDispatch struct {
 
 func NewNamedCond() *MessageDispatch {
 	log.Info("[NamedCond] created")
-	nc := MessageDispatch{}
-	nc.groups = make(map[string]*sync.Cond)
-	return &nc
+	md := MessageDispatch{}
+	md.groups = make(map[string]*sync.Cond)
+	return &md
 }
 
-func (nc *MessageDispatch) Wait(key string) {
+func (md *MessageDispatch) Wait(key string) {
+	md.mutex.Lock()
+	defer md.mutex.Unlock()
+
+	md.waitLocked(key)
+}
+
+func (md *MessageDispatch) waitLocked(key string) {
 	normalizedKey := normalizeKey(key)
-	log.Debug("[NamedCond] registered %s as %s", key, normalizedKey)
+	log.Debug("[NamedCond] waiting for %s as %s", key, normalizedKey)
 
-	nc.mutex.Lock()
-	defer nc.mutex.Unlock()
-
-	cond, ok := nc.groups[normalizedKey]
+	cond, ok := md.groups[normalizedKey]
 	if !ok {
-		cond = sync.NewCond(&nc.mutex)
-		nc.groups[normalizedKey] = cond
+		cond = sync.NewCond(&md.mutex)
+		md.groups[normalizedKey] = cond
 	}
 
 	cond.Wait()
 }
 
-func (nc *MessageDispatch) Broadcast(key string) {
-	log.Debug("[NamedCond] broadcasting %s", key)
+func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
+	md.mutex.Lock()
 
-	nc.mutex.Lock()
-	defer nc.mutex.Unlock()
-
-	for _, parent := range getParentKeys(key) {
-		cond, ok := nc.groups[parent]
-		if ok {
-			cond.Broadcast()
-			delete(nc.groups, parent)
-		}
+	if err := getResource(context); err != nil {
+		md.mutex.Unlock()
+		return "", err
 	}
 
+	hash := getHash(context)
+	if hash != oldHash {
+		md.mutex.Unlock()
+		return hash, nil
+	}
+
+	defer md.mutex.Unlock()
+	md.waitLocked(key)
+
+	delete(context, "response")
+	if err := getResource(context); err != nil {
+		return "", err
+	}
+
+	return getHash(context), nil
 }
 
-func (nc *MessageDispatch) Close() {
-	nc.mutex.Lock()
-	defer nc.mutex.Unlock()
+func (md *MessageDispatch) Broadcast(key string) {
+	log.Debug("[NamedCond] broadcasting %s", key)
 
-	for _, cond := range nc.groups {
+	md.mutex.Lock()
+	defer md.mutex.Unlock()
+
+	for _, parent := range getParentKeys(key) {
+		cond, ok := md.groups[parent]
+		if ok {
+			cond.Broadcast()
+			delete(md.groups, parent)
+		}
+	}
+}
+
+func (md *MessageDispatch) Close() {
+	md.mutex.Lock()
+	defer md.mutex.Unlock()
+
+	for _, cond := range md.groups {
 		cond.Broadcast()
 	}
 

@@ -214,21 +214,26 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 	getPluralFunc := func(w http.ResponseWriter, r *http.Request, p martini.Params, identityService middleware.IdentityService, context middleware.Context) {
 		addJSONContentTypeHeader(w)
 		fillInContext(context, dataStore, r, w, s, p, server.sync, identityService, server.queue)
-		if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
-			handleError(w, err)
-			return
-		}
 
 		if r.Header.Get("Long-Poll") == "true" {
-			waitForNewChanges(w, r, context)
-			delete(context, "response")
-			log.Critical("Getting second time")
+			oldHash := calculateResponseEtag(context)
+			getResource := func(context middleware.Context) error {
+				return resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
+			}
+
+			longPoll := GetLongPoll()
+			newEtag, err := longPoll.GetOrWait(r.URL.Path, oldHash, context, getResource, calculateResponseEtag)
+			if err != nil {
+				handleError(w, err)
+				return
+			}
+
+			w.Header().Add("Etag", newEtag)
+		} else {
 			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
 				handleError(w, err)
 				return
 			}
-			newEtag := calculateResponseEtag(context)
-			w.Header().Add("Etag", newEtag)
 		}
 
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
@@ -245,21 +250,26 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 		addJSONContentTypeHeader(w)
 		fillInContext(context, dataStore, r, w, s, p, server.sync, identityService, server.queue)
 		id := p["id"]
-		if err := resources.GetSingleResource(context, dataStore, s, id); err != nil {
-			handleError(w, err)
-			return
-		}
 
 		if r.Header.Get("Long-Poll") == "true" {
-			waitForNewChanges(w, r, context)
-			delete(context, "response")
-			log.Critical("Getting second time")
-			if err := resources.GetMultipleResources(context, dataStore, s, r.URL.Query()); err != nil {
+			oldHash := calculateResponseEtag(context)
+			getResource := func(context middleware.Context) error {
+				return resources.GetSingleResource(context, dataStore, s, id)
+			}
+
+			longPoll := GetLongPoll()
+			newEtag, err := longPoll.GetOrWait(r.URL.Path, oldHash, context, getResource, calculateResponseEtag)
+			if err != nil {
 				handleError(w, err)
 				return
 			}
-			newEtag := calculateResponseEtag(context)
+
 			w.Header().Add("Etag", newEtag)
+		} else {
+			if err := resources.GetSingleResource(context, dataStore, s, id); err != nil {
+				handleError(w, err)
+				return
+			}
 		}
 
 		routes.ServeJson(w, context["response"])
@@ -423,7 +433,7 @@ func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middlewar
 		log.Critical("Long-Poll %s - hashes match, will wait", key)
 
 		log.Critical("Waiting for %s", key)
-		dispatch := LongPollDispatch()
+		dispatch := GetLongPoll()
 		dispatch.Wait(key)
 		log.Critical("Woken up from %s", key)
 	} else {
