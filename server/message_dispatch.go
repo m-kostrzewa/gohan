@@ -68,21 +68,19 @@ func (md *MessageDispatch) waitLocked(key string) {
 func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
 	log.Debug("[MessageDispatch] New request for %s", key)
 	md.mutex.Lock()
+	defer md.mutex.Unlock()
 
 	if err := getResource(context); err != nil {
-		md.mutex.Unlock()
 		log.Warning("[MessageDispatch] Error when retrieving resource %s", key)
 		return "", err
 	}
 
-	hash := getHash(context)
-	if hash != oldHash {
-		md.mutex.Unlock()
-		log.Debug("[MessageDispatch] Hashes differ for %s, old: %s, new %s", key, oldHash, hash)
-		return hash, nil
+	currentHash := getHash(context)
+	if currentHash != oldHash {
+		log.Debug("[MessageDispatch] Hashes differ for %s, old: %s, new %s", key, oldHash, currentHash)
+		return currentHash, nil
 	}
 
-	defer md.mutex.Unlock()
 	md.waitLocked(key)
 
 	delete(context, "response")
@@ -91,7 +89,9 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 		return "", err
 	}
 
-	return getHash(context), nil
+	newHash := getHash(context)
+	log.Debug("[MessageDispatch] Returing new value for %s, old hash: %s, new hash %s", key, oldHash, newHash)
+	return newHash, nil
 }
 
 // Broadcast signals all subs waiting for a specified key and cleans up.
