@@ -1308,6 +1308,34 @@ var _ = Describe("Server package test", func() {
 
 			test.closeMessageDispatch()
 		})
+
+		It("should panic when broadcasting after close", func(done Done) {
+			test := NewMessageDispatchTest()
+
+			test.closeMessageDispatch()
+
+			broadcast := func() {
+				test.sendMessage("/key")
+			}
+
+			Expect(broadcast).Should(Panic())
+
+			close(done)
+		})
+
+		It("should panic when waiting after close", func(done Done) {
+			test := NewMessageDispatchTest()
+
+			test.closeMessageDispatch()
+
+			wait := func() {
+				test.messageDispatch.Wait("/key")
+			}
+
+			Expect(wait).Should(Panic())
+
+			close(done)
+		})
 	})
 
 	Describe("Long polling", func() {

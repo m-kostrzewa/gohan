@@ -26,6 +26,7 @@ import (
 type MessageDispatch struct {
 	groups map[string]*sync.Cond
 	mutex  sync.Mutex
+	closed bool
 }
 
 // NewMessageDispatch returns a new MessageDispatch object.
@@ -33,6 +34,7 @@ func NewMessageDispatch() *MessageDispatch {
 	log.Info("[MessageDispatch] created")
 	md := MessageDispatch{}
 	md.groups = make(map[string]*sync.Cond)
+	md.closed = false
 	return &md
 }
 
@@ -45,6 +47,10 @@ func (md *MessageDispatch) Wait(key string) {
 }
 
 func (md *MessageDispatch) waitLocked(key string) {
+	if md.closed {
+		panic("Message dispatch already closed, no more messages will be sent")
+	}
+
 	normalizedKey := normalizeKey(key)
 	log.Debug("[MessageDispatch] waiting for %s as %s", key, normalizedKey)
 
@@ -95,6 +101,10 @@ func (md *MessageDispatch) Broadcast(key string) {
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
 
+	if md.closed {
+		panic("Message dispatch already closed, can't send any more broadcasts")
+	}
+
 	for _, parent := range getParentKeys(key) {
 		cond, ok := md.groups[parent]
 		if ok {
@@ -110,6 +120,8 @@ func (md *MessageDispatch) Broadcast(key string) {
 func (md *MessageDispatch) Close() {
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
+
+	md.closed = true
 
 	for _, cond := range md.groups {
 		cond.Broadcast()
