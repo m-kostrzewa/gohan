@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1340,10 +1341,9 @@ var _ = Describe("Server package test", func() {
 
 	Describe("Long polling", func() {
 		const (
-			longPollPrefix          = "/gohan/long_poll_notifications/"
+			longPollPrefix = "/gohan/long_poll_notifications/"
 		)
 		var (
-			// networkSchema   *schema.Schema
 			wrappedTestDB       db.DB
 			testSync            gohan_sync.Sync
 			testNetwork         map[string]interface{}
@@ -1401,76 +1401,189 @@ var _ = Describe("Server package test", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		Context("without or with empty long polling header", func() {
-			It("should return immediately with resource etag", func(done Done) {
-				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", http.StatusOK)
-				Expect(response.Header.Get(srv.LongPollEtag)).ToNot(Equal(""))
-				close(done)
-			})
-		})
+		AssertRespondsImmediately := func(getRequestURL, getCurrentResourceVersion func() string) func() {
+			return func() {
+				responseChan := make(chan *http.Response, 1)
+				doneChan := make(chan bool, 1)
+				go asyncLongPoll(getRequestURL(), getCurrentResourceVersion(), doneChan, responseChan)
 
-		Context("with valid long polling header", func() {
-			var oldEtag string
+				Eventually(doneChan, time.Second*10).Should(Receive())
+			}
+		}
 
-			BeforeEach(func() {
-				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", http.StatusOK)
-				oldEtag = response.Header.Get(srv.LongPollEtag)
-			})
+		AssertVersionsDifferent := func(getRequestURL, getCurrentResourceVersion func() string) func() {
+			return func() {
+				originalResourceVersion := getCurrentResourceVersion()
 
-			It("should return immediately if versions are different with new version", func(done Done) {
-				var response *http.Response
-				ch := make(chan bool, 1)
-				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "some-random-hash", http.StatusOK)
-					ch <- true
-				}()
+				responseChan := make(chan *http.Response, 1)
+				doneChan := make(chan bool, 1)
+				go asyncLongPoll(getRequestURL(), originalResourceVersion, doneChan, responseChan)
+				<-doneChan
+				response := <-responseChan
+				newResourceVersion := getEtag(response)
+				Expect(originalResourceVersion).ToNot(Equal(newResourceVersion))
+			}
+		}
 
-				Eventually(ch, time.Second*10).Should(Receive())
+		AssertHangsIfVersionsSameUntilNotified := func(getRequestURL, getCurrentResourceVersion func() string) func() {
+			return func() {
+				responseChan := make(chan *http.Response, 1)
+				doneChan := make(chan bool, 1)
+				go asyncLongPoll(getRequestURL(), getCurrentResourceVersion(), doneChan, responseChan)
+				Consistently(doneChan).ShouldNot(Receive())
+				server.LongPoll().Broadcast(testNetworkResource.Path())
+				Eventually(doneChan, time.Second*10).Should(Receive())
+			}
+		}
 
-				newEtag := response.Header.Get(srv.LongPollEtag)
-				Expect(oldEtag).To(Equal(newEtag))
-				close(done)
-			})
+		AssertHangsAndRespondsWithNewVersionsIfResourceModified := func(getRequestURL, getCurrentResourceVersion func() string) func() {
+			return func() {
+				originalResourceVersion := getCurrentResourceVersion()
 
-			It("should hang if versions are same and return new version upon resource modification via Gohan API", func(done Done) {
-				var response *http.Response
-				ch := make(chan bool, 1)
-				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, http.StatusOK)
-					ch <- true
-				}()
-				Consistently(ch).ShouldNot(Receive())
+				responseChan := make(chan *http.Response, 1)
+				doneChan := make(chan bool, 1)
+				go asyncLongPoll(getRequestURL(), originalResourceVersion, doneChan, responseChan)
+				Consistently(doneChan).ShouldNot(Receive())
 
 				networkUpdate := map[string]interface{}{
 					"name": "NetworkRed2",
 				}
 				testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
-				server.LongPoll().Broadcast(testNetworkResource.Path())
-				Eventually(ch, time.Second*10).Should(Receive())
 
-				newEtag := response.Header.Get(srv.LongPollEtag)
-				Expect(oldEtag).ToNot(Equal(newEtag))
-				close(done)
+				server.LongPoll().Broadcast(testNetworkResource.Path())
+				Eventually(doneChan, time.Second*10).Should(Receive())
+
+				response := <-responseChan
+				newResourceVersion := getEtag(response)
+				Expect(originalResourceVersion).ToNot(Equal(newResourceVersion))
+			}
+		}
+
+		Context("with requests of single resource", func() {
+			getRequestURL := func() string {
+				return getNetworkSingularURL("red")
+			}
+
+			Context("without or with empty long polling header", func() {
+				getOriginalResourceEtag := func() string {
+					return ""
+				}
+
+				It("should respond immediately", AssertRespondsImmediately(getRequestURL, getOriginalResourceEtag))
+
+				It("should respond new version", AssertVersionsDifferent(getRequestURL, getOriginalResourceEtag))
 			})
 
-			It("should hang if versions are same and return same version if there is notification but resource itself was not changed", func(done Done) {
-				var response *http.Response
-				ch := make(chan bool, 1)
-				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, http.StatusOK)
-					ch <- true
-				}()
-				Consistently(ch).ShouldNot(Receive())
+			Context("versions are different", func() {
+				getOriginalResourceEtag := func() string {
+					return "some-resource-version"
+				}
 
-				server.LongPoll().Broadcast(testNetworkResource.Path())
-				Eventually(ch, time.Second*10).Should(Receive())
+				It("should respond immediately", AssertRespondsImmediately(getRequestURL, getOriginalResourceEtag))
 
-				newEtag := response.Header.Get(srv.LongPollEtag)
-				Expect(oldEtag).To(Equal(newEtag))
-				close(done)
+				It("should respond new version", AssertVersionsDifferent(getRequestURL, getOriginalResourceEtag))
+			})
+
+			Context("versions are same", func() {
+				getOriginalResourceEtag := func() string {
+					_, response := testLongPollURL("GET", getRequestURL(), adminTokenID, "", http.StatusOK)
+					return getEtag(response)
+				}
+
+				It("should hang if versions are same until notified", AssertHangsIfVersionsSameUntilNotified(getRequestURL, getOriginalResourceEtag))
+
+				It("should hang and respond with new version if resource was modified", AssertHangsAndRespondsWithNewVersionsIfResourceModified(getRequestURL, getOriginalResourceEtag))
 			})
 		})
 
+		Context("with requests of resource list", func() {
+			getRequestURL := func() string {
+				return networkPluralURL
+			}
+
+			Context("list versions are different", func() {
+				getOriginalResourceEtag := func() string {
+					return "some-resource-list-version"
+				}
+
+				It("should respond immediately", AssertRespondsImmediately(getRequestURL, getOriginalResourceEtag))
+
+				It("should respond new version", AssertVersionsDifferent(getRequestURL, getOriginalResourceEtag))
+			})
+
+			Context("versions are same", func() {
+				getOriginalResourceEtag := func() string {
+					_, response := testLongPollURL("GET", getRequestURL(), adminTokenID, "", http.StatusOK)
+					return getEtag(response)
+				}
+
+				It("should hang if versions are same until notified by a change to a child resource", AssertHangsIfVersionsSameUntilNotified(getRequestURL, getOriginalResourceEtag))
+
+				It("should hang and respond with new version if child resource was modified", AssertHangsAndRespondsWithNewVersionsIfResourceModified(getRequestURL, getOriginalResourceEtag))
+			})
+		})
+
+		Context("notifying a path", func() {
+
+			It("should notify all subscibers of resource and subcribers of directories above it (parents+)", func() {
+				pathSubscribers := make(map[string]chan bool)
+
+				pathSubscribers[getNetworkSingularURL("red")] = make(chan bool, 1)
+				pathSubscribers[baseURL+"/v2.0/networks"] = make(chan bool, 1)
+				pathSubscribers[baseURL+"/v2.0/subnets"] = make(chan bool, 1)
+
+				responseChan := make(chan *http.Response, len(pathSubscribers))
+				for subURL, subChan := range pathSubscribers {
+					_, response := testLongPollURL("GET", subURL, adminTokenID, "", http.StatusOK)
+					pathEtag := getEtag(response)
+
+					go func(url string, ch chan bool) {
+						asyncLongPoll(url, pathEtag, ch, responseChan)
+					}(subURL, subChan)
+				}
+
+				time.Sleep(time.Millisecond * 100) // wait for longpolling to start
+
+				var wg sync.WaitGroup
+
+				asyncEventually := func(URL string) {
+					defer GinkgoRecover()
+					defer wg.Done()
+					Eventually(pathSubscribers[URL], time.Second*10).Should(Receive())
+				}
+				asyncConsistently := func(URL string) {
+					defer GinkgoRecover()
+					defer wg.Done()
+					Consistently(pathSubscribers[URL]).ShouldNot(Receive())
+				}
+
+				fmt.Println(testNetworkResource.Path())
+				server.LongPoll().Broadcast(testNetworkResource.Path())
+
+				wg.Add(3)
+				go asyncEventually(getNetworkSingularURL("red"))
+				go asyncEventually(baseURL + "/v2.0/networks")
+				go asyncConsistently(baseURL + "/v2.0/subnets")
+				wg.Wait()
+
+				time.Sleep(time.Millisecond * 200)
+				server.LongPoll().Broadcast("/v2.0/subnets")
+
+				wg.Add(3)
+				go asyncConsistently(getNetworkSingularURL("red"))
+				go asyncConsistently(baseURL + "/v2.0/networks")
+				go asyncEventually(baseURL + "/v2.0/subnets")
+				wg.Wait()
+			})
+		})
+
+		Context("requesting not existing resource", func() {
+
+			It("should not work", func() {
+				_, response := testLongPollURL("GET", getNetworkSingularURL("nonexisting_resource"), adminTokenID, "", http.StatusNotFound)
+				Expect(getEtag(response)).To(Equal(""))
+			})
+		})
 	})
 })
 
@@ -1520,6 +1633,16 @@ func (test *MessageDispatchTest) sendMessage(message string) {
 
 func (test *MessageDispatchTest) closeMessageDispatch() {
 	test.messageDispatch.Close()
+}
+
+func getEtag(r *http.Response) string {
+	return r.Header.Get(srv.LongPollEtag)
+}
+
+func asyncLongPoll(requestURL, currentResourceVersion string, done chan bool, response chan *http.Response) {
+	_, r := testLongPollURL("GET", requestURL, adminTokenID, currentResourceVersion, http.StatusOK)
+	response <- r
+	done <- true
 }
 
 func BenchmarkPOSTAPI(b *testing.B) {
