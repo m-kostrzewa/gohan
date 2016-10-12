@@ -23,6 +23,7 @@ _testmain.go
 *.exe
 *.test
 *.db
+*.orig
 test.db
 test.json
 test.yaml
