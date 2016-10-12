@@ -19,7 +19,6 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 
@@ -45,20 +44,7 @@ var longPollDispatch *MessageDispatch
 var initOnce sync.Once
 
 func initMessageDispatch() {
-	longPollDispatch = NewNamedCond()
-}
-
-func waitForNewChanges(w http.ResponseWriter, r *http.Request, context middleware.Context) {
-	etag := calculateResponseEtag(context)
-	key := r.URL.Path
-	if etag == r.Header.Get(LongPollHeader) {
-		log.Debug("[Long polling] Resource hashes match, waiting for %s", key)
-		dispatch := GetLongPoll()
-		dispatch.Wait(key)
-		log.Debug("[Long polling] Woken up from %s", key)
-	} else {
-		log.Debug("[Long polling] Resource hashes different, responding immediately %s", key)
-	}
+	longPollDispatch = NewMessageDispatch()
 }
 
 func calculateResponseEtag(context middleware.Context) string {

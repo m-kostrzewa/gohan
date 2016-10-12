@@ -28,9 +28,9 @@ type MessageDispatch struct {
 	mutex  sync.Mutex
 }
 
-// NewNamedCond returns a new MessageDispatch object.
-func NewNamedCond() *MessageDispatch {
-	log.Info("[NamedCond] created")
+// NewMessageDispatch returns a new MessageDispatch object.
+func NewMessageDispatch() *MessageDispatch {
+	log.Info("[MessageDispatch] created")
 	md := MessageDispatch{}
 	md.groups = make(map[string]*sync.Cond)
 	return &md
@@ -46,7 +46,7 @@ func (md *MessageDispatch) Wait(key string) {
 
 func (md *MessageDispatch) waitLocked(key string) {
 	normalizedKey := normalizeKey(key)
-	log.Debug("[NamedCond] waiting for %s as %s", key, normalizedKey)
+	log.Debug("[MessageDispatch] waiting for %s as %s", key, normalizedKey)
 
 	cond, ok := md.groups[normalizedKey]
 	if !ok {
@@ -58,17 +58,21 @@ func (md *MessageDispatch) waitLocked(key string) {
 }
 
 // GetOrWait compares hash of a resource with oldHash. If hashes match, will wait for corresponding resource path to be signaled. Otherwise, will return newly calculated hash immediately.
+// On success, the resource will be stored in context.
 func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
+	log.Debug("[MessageDispatch] New request for %s", key)
 	md.mutex.Lock()
 
 	if err := getResource(context); err != nil {
 		md.mutex.Unlock()
+		log.Warning("[MessageDispatch] Error when retrieving resource %s", key)
 		return "", err
 	}
 
 	hash := getHash(context)
 	if hash != oldHash {
 		md.mutex.Unlock()
+		log.Debug("[MessageDispatch] Hashes differ for %s, old: %s, new %s", key, oldHash, hash)
 		return hash, nil
 	}
 
@@ -77,6 +81,7 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 
 	delete(context, "response")
 	if err := getResource(context); err != nil {
+		log.Warning("[MessageDispatch] Error when retrying retrieving resource %s", key)
 		return "", err
 	}
 
@@ -85,7 +90,7 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 
 // Broadcast signals all subs waiting for a specified key and cleans up.
 func (md *MessageDispatch) Broadcast(key string) {
-	log.Debug("[NamedCond] broadcasting %s", key)
+	log.Debug("[MessageDispatch] broadcasting %s", key)
 
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
@@ -108,7 +113,7 @@ func (md *MessageDispatch) Close() {
 		cond.Broadcast()
 	}
 
-	log.Info("[long_polling] NamedCond closed")
+	log.Info("[MessageDispatch] closed")
 }
 
 func getParentKeys(key string) []string {

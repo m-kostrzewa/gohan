@@ -1312,9 +1312,7 @@ var _ = Describe("Server package test", func() {
 
 	Describe("Long polling", func() {
 		const (
-			statePrefix             = "/state"
 			longPollPrefix          = "/gohan/long_poll_notifications/"
-			longPollNotificationTTL = 10 // sec
 		)
 		var (
 			// networkSchema   *schema.Schema
@@ -1377,7 +1375,7 @@ var _ = Describe("Server package test", func() {
 
 		Context("without or with empty long polling header", func() {
 			It("should return immediately with resource etag", func() {
-				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", nil, http.StatusOK)
+				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", http.StatusOK)
 				Expect(response.Header.Get(srv.LongPollEtag)).ToNot(Equal(""))
 			})
 		})
@@ -1386,7 +1384,7 @@ var _ = Describe("Server package test", func() {
 			var oldEtag string
 
 			BeforeEach(func() {
-				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", nil, http.StatusOK)
+				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", http.StatusOK)
 				oldEtag = response.Header.Get(srv.LongPollEtag)
 			})
 
@@ -1394,7 +1392,7 @@ var _ = Describe("Server package test", func() {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "some-random-hash", nil, http.StatusOK)
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "some-random-hash", http.StatusOK)
 					ch <- true
 				}()
 
@@ -1408,7 +1406,7 @@ var _ = Describe("Server package test", func() {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, nil, http.StatusOK)
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, http.StatusOK)
 					ch <- true
 				}()
 				Consistently(ch).ShouldNot(Receive())
@@ -1428,7 +1426,7 @@ var _ = Describe("Server package test", func() {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
-					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, nil, http.StatusOK)
+					_, response = testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, oldEtag, http.StatusOK)
 					ch <- true
 				}()
 				Consistently(ch).ShouldNot(Receive())
@@ -1450,7 +1448,7 @@ type MessageDispatchTest struct {
 }
 
 func NewMessageDispatchTest() MessageDispatchTest {
-	test := MessageDispatchTest{srv.NewNamedCond(), nil}
+	test := MessageDispatchTest{srv.NewMessageDispatch(), nil}
 	return test
 }
 
@@ -1635,18 +1633,11 @@ func testURL(method, url, token string, postData interface{}, expectedCode int) 
 	return data
 }
 
-func testURLWithResponse(method, url, token string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
-	data, resp := httpRequest(method, url, token, nil, postData)
-	jsonData, _ := json.MarshalIndent(data, "", "    ")
-	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
-	return data, resp
-}
-
-func testLongPollURL(method, url, token, longPoll string, postData interface{}, expectedCode int) (interface{}, *http.Response) {
+func testLongPollURL(method, url, token, longPoll string, expectedCode int) (interface{}, *http.Response) {
 	headers := make(map[string]string)
 	headers[srv.LongPollHeader] = longPoll
 
-	data, resp := httpRequest(method, url, token, headers, postData)
+	data, resp := httpRequest(method, url, token, headers, nil)
 	jsonData, _ := json.MarshalIndent(data, "", "    ")
 	ExpectWithOffset(1, resp.StatusCode).To(Equal(expectedCode), string(jsonData))
 	return data, resp
