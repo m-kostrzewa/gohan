@@ -102,6 +102,8 @@ func (md *MessageDispatch) Broadcast(key string) {
 			delete(md.groups, parent)
 		}
 	}
+
+	log.Debug("[MessageDispatch] broadcasting %s done", key)
 }
 
 // Close broadcasts on all keys and cleans up.

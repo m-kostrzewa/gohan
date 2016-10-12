@@ -61,6 +61,7 @@ type Server struct {
 	extensions       []string
 	keystoneIdentity middleware.IdentityService
 	queue            *job.Queue
+	longPoll         *MessageDispatch
 }
 
 func (server *Server) mapRoutes() {
@@ -201,7 +202,7 @@ func NewServer(configFile string) (*Server, error) {
 		"go",
 	})
 	schema.DefaultExtension = config.GetString("extension/default", "javascript")
-	server.address = config.GetString("address", ":"+port)
+	server.address = config.GetString("address", ":" + port)
 	if config.GetBool("tls/enabled", false) {
 		log.Info("TLS enabled")
 		server.tls = &tlsConfig{
@@ -278,6 +279,8 @@ func NewServer(configFile string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid base dir: %s", err)
 	}
+
+	server.longPoll = NewMessageDispatch()
 
 	server.addOptionsRoute()
 	cors := config.GetString("cors", "")
@@ -386,13 +389,18 @@ func (server *Server) Stop() {
 	stopSNMPProcess(server)
 	stopCRONProcess(server)
 	manners.Close()
-	GetLongPoll().Close()
+	server.longPoll.Close()
 	server.queue.Stop()
 }
 
 //Queue returns servers build-in queue
 func (server *Server) Queue() *job.Queue {
 	return server.queue
+}
+
+//LongPoll returns servers build-in long-poll notification dispatcher
+func (server *Server) LongPoll() *MessageDispatch {
+	return server.longPoll
 }
 
 //RunServer runs gohan api server

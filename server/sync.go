@@ -682,9 +682,7 @@ func startLongPollWatchProcess(server *Server) {
 				// don't notify subs on "expire"
 				if response.Action == "create" || response.Action == "set" || response.Action == "update" {
 					path := "/" + strings.TrimPrefix(response.Key, longPollPrefix)
-					if err := NotifyKeyUpdateSubscribers(path); err != nil {
-						log.Warning(fmt.Sprintf("Error during key subscribers notification (long polling): %s", err))
-					}
+					server.longPoll.Broadcast(path)
 					log.Debug("[Sync/Long polling] Notified from etcd watch.")
 				}
 			}()

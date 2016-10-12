@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/cloudwan/gohan/db"
 	"github.com/cloudwan/gohan/db/transaction"
@@ -40,13 +39,6 @@ const (
 	longPollNotificationTTL = 10 // sec
 )
 
-var longPollDispatch *MessageDispatch
-var initOnce sync.Once
-
-func initMessageDispatch() {
-	longPollDispatch = NewMessageDispatch()
-}
-
 func calculateResponseEtag(context middleware.Context) string {
 	hash := md5.New()
 	responseBytes, _ := json.Marshal(context["response"])
@@ -54,21 +46,6 @@ func calculateResponseEtag(context middleware.Context) string {
 	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
 	log.Debug("[Long polling] Calculated hash: %s", etag)
 	return etag
-}
-
-// GetLongPoll returns singleton MessageDispatch
-func GetLongPoll() *MessageDispatch {
-	initOnce.Do(initMessageDispatch)
-	return longPollDispatch
-}
-
-// NotifyKeyUpdateSubscribers signals all goroutines waiting for an update of specified key.
-func NotifyKeyUpdateSubscribers(fullKey string) error {
-	log.Debug("[Long polling] Notifying subs of: %s.", fullKey)
-	md := GetLongPoll()
-	md.Broadcast(fullKey)
-	log.Debug("[Long polling] Done notifying subs of: %s.", fullKey)
-	return nil
 }
 
 // DbLongPollNotifierWrapper notifies long poll subscribers on modifying DB transactions (Create/Update/Delete) on all HA nodes.

@@ -220,8 +220,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			getResource := func(context middleware.Context) error {
 				return resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
 			}
-			longPoll := GetLongPoll()
-			newEtag, err = longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
+			newEtag, err = server.longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
 		} else {
 			err = resources.GetMultipleResources(context, dataStore, s, r.URL.Query())
 			newEtag = calculateResponseEtag(context)
@@ -254,8 +253,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			getResource := func(context middleware.Context) error {
 				return resources.GetSingleResource(context, dataStore, s, id)
 			}
-			longPoll := GetLongPoll()
-			newEtag, err = longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
+			newEtag, err = server.longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
 		} else {
 			err = resources.GetSingleResource(context, dataStore, s, id)
 			newEtag = calculateResponseEtag(context)

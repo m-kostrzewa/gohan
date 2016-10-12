@@ -1374,9 +1374,10 @@ var _ = Describe("Server package test", func() {
 		})
 
 		Context("without or with empty long polling header", func() {
-			It("should return immediately with resource etag", func() {
+			It("should return immediately with resource etag", func(done Done) {
 				_, response := testLongPollURL("GET", getNetworkSingularURL("red"), adminTokenID, "", http.StatusOK)
 				Expect(response.Header.Get(srv.LongPollEtag)).ToNot(Equal(""))
+				close(done)
 			})
 		})
 
@@ -1388,7 +1389,7 @@ var _ = Describe("Server package test", func() {
 				oldEtag = response.Header.Get(srv.LongPollEtag)
 			})
 
-			It("should return immediately if versions are different with new version", func() {
+			It("should return immediately if versions are different with new version", func(done Done) {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
@@ -1400,9 +1401,10 @@ var _ = Describe("Server package test", func() {
 
 				newEtag := response.Header.Get(srv.LongPollEtag)
 				Expect(oldEtag).To(Equal(newEtag))
+				close(done)
 			})
 
-			It("should hang if versions are same and return new version upon resource modification via Gohan API", func() {
+			It("should hang if versions are same and return new version upon resource modification via Gohan API", func(done Done) {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
@@ -1415,14 +1417,15 @@ var _ = Describe("Server package test", func() {
 					"name": "NetworkRed2",
 				}
 				testURL("PUT", getNetworkSingularURL("red"), adminTokenID, networkUpdate, http.StatusOK)
-				srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+				server.LongPoll().Broadcast(testNetworkResource.Path())
 				Eventually(ch, time.Second*10).Should(Receive())
 
 				newEtag := response.Header.Get(srv.LongPollEtag)
 				Expect(oldEtag).ToNot(Equal(newEtag))
+				close(done)
 			})
 
-			It("should hang if versions are same and return same version if there is notification but resource itself was not changed", func() {
+			It("should hang if versions are same and return same version if there is notification but resource itself was not changed", func(done Done) {
 				var response *http.Response
 				ch := make(chan bool, 1)
 				go func() {
@@ -1431,11 +1434,12 @@ var _ = Describe("Server package test", func() {
 				}()
 				Consistently(ch).ShouldNot(Receive())
 
-				srv.NotifyKeyUpdateSubscribers(testNetworkResource.Path())
+				server.LongPoll().Broadcast(testNetworkResource.Path())
 				Eventually(ch, time.Second*10).Should(Receive())
 
 				newEtag := response.Header.Get(srv.LongPollEtag)
 				Expect(oldEtag).To(Equal(newEtag))
+				close(done)
 			})
 		})
 
