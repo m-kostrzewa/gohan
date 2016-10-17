@@ -44,7 +44,7 @@ func calculateResponseEtag(context middleware.Context) string {
 	responseBytes, _ := json.Marshal(context["response"])
 	hash.Write(responseBytes)
 	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
-	log.Debug("[Long polling] Calculated hash: %s", etag)
+	log.Debug("[LongPolling] Calculated hash: %s", etag)
 	return etag
 }
 
@@ -124,9 +124,9 @@ func AddLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
 	}
 	path := longPollPrefix + postfix
 	if err := sync.UpdateTTL(path, "dummy", longPollNotificationTTL); err != nil {
-		log.Error(fmt.Sprintf("[Long polling] Failed to add long poll notification entry: %s", fullKey))
+		log.Error("[LongPolling] Failed to add long poll notification entry: %s", fullKey)
 		return err
 	}
-	log.Debug("[Long polling] Added long poll notification entry: %s (TTL = %s sec).", fullKey, longPollNotificationTTL)
+	log.Debug("[LongPolling] Added long poll notification entry: %s (TTL = %d sec).", fullKey, longPollNotificationTTL)
 	return nil
 }

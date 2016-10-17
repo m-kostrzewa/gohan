@@ -1557,7 +1557,6 @@ var _ = Describe("Server package test", func() {
 					Consistently(pathSubscribers[URL]).ShouldNot(Receive())
 				}
 
-				fmt.Println(testNetworkResource.Path())
 				server.LongPoll().Broadcast(testNetworkResource.Path())
 
 				wg.Add(3)

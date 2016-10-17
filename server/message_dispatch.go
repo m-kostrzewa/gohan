@@ -52,7 +52,7 @@ func (md *MessageDispatch) waitLocked(key string) {
 	}
 
 	normalizedKey := normalizeKey(key)
-	log.Debug("[MessageDispatch] waiting for %s as %s", key, normalizedKey)
+	log.Debug("[MessageDispatch] Waiting for %s as %s", key, normalizedKey)
 
 	cond, ok := md.groups[normalizedKey]
 	if !ok {
@@ -66,18 +66,18 @@ func (md *MessageDispatch) waitLocked(key string) {
 // GetOrWait compares hash of a resource with oldHash. If hashes match, will wait for corresponding resource path to be signaled. Otherwise, will return newly calculated hash immediately.
 // On success, the resource will be stored in context.
 func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
-	log.Debug("[MessageDispatch] New request for %s", key)
+	log.Debug("[MessageDispatch] GetOrWait: New request for %s", key)
 	md.mutex.Lock()
 	defer md.mutex.Unlock()
 
 	if err := getResource(context); err != nil {
-		log.Warning("[MessageDispatch] Error when retrieving resource %s", key)
+		log.Warning("[MessageDispatch] GetOrWait: Error when retrieving resource %s", key)
 		return "", err
 	}
 
 	currentHash := getHash(context)
 	if currentHash != oldHash {
-		log.Debug("[MessageDispatch] Hashes differ for %s, old: %s, new %s", key, oldHash, currentHash)
+		log.Debug("[MessageDispatch] GetOrWait: No need to wait, hashes differ for %s, old: %s, new %s", key, oldHash, currentHash)
 		return currentHash, nil
 	}
 
@@ -85,12 +85,12 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 
 	delete(context, "response")
 	if err := getResource(context); err != nil {
-		log.Warning("[MessageDispatch] Error when retrying retrieving resource %s", key)
+		log.Warning("[MessageDispatch] GetOrWait: Error when retrying retrieving resource %s", key)
 		return "", err
 	}
 
 	newHash := getHash(context)
-	log.Debug("[MessageDispatch] Returing new value for %s, old hash: %s, new hash %s", key, oldHash, newHash)
+	log.Debug("[MessageDispatch] GetOrWait: Notification received, returing new value for %s, old hash: %s, new hash %s", key, oldHash, newHash)
 	return newHash, nil
 }
 
