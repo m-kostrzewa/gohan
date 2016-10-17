@@ -202,7 +202,7 @@ func NewServer(configFile string) (*Server, error) {
 		"go",
 	})
 	schema.DefaultExtension = config.GetString("extension/default", "javascript")
-	server.address = config.GetString("address", ":" + port)
+	server.address = config.GetString("address", ":"+port)
 	if config.GetBool("tls/enabled", false) {
 		log.Info("TLS enabled")
 		server.tls = &tlsConfig{
@@ -291,8 +291,8 @@ func NewServer(configFile string) (*Server, error) {
 		}
 		server.martini.Use(func(rw http.ResponseWriter, r *http.Request) {
 			rw.Header().Add("Access-Control-Allow-Origin", cors)
-			rw.Header().Add("Access-Control-Allow-Headers", "X-Auth-Token, Content-Type")
-			rw.Header().Add("Access-Control-Expose-Headers", "X-Total-Count")
+			rw.Header().Add("Access-Control-Allow-Headers", "X-Auth-Token, Content-Type, Long-Poll")
+			rw.Header().Add("Access-Control-Expose-Headers", "X-Total-Count, Etag")
 			rw.Header().Add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE")
 		})
 	}
