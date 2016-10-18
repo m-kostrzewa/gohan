@@ -291,8 +291,8 @@ func NewServer(configFile string) (*Server, error) {
 		}
 		server.martini.Use(func(rw http.ResponseWriter, r *http.Request) {
 			rw.Header().Add("Access-Control-Allow-Origin", cors)
-			rw.Header().Add("Access-Control-Allow-Headers", "X-Auth-Token, Content-Type, Long-Poll")
-			rw.Header().Add("Access-Control-Expose-Headers", "X-Total-Count, Etag")
+			rw.Header().Add("Access-Control-Allow-Headers", "X-Auth-Token, Content-Type, "+LongPollHeader)
+			rw.Header().Add("Access-Control-Expose-Headers", "X-Total-Count, "+LongPollEtag)
 			rw.Header().Add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE")
 		})
 	}
