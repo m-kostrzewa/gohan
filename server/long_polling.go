@@ -33,7 +33,7 @@ const (
 	LongPollHeader = "Long-Poll"
 
 	// LongPollEtag is a http header returned by the API along with responses to long-polled GETs. Used mainly for resource versioning for long-polling mechanism, but can also be used for caching.
-	LongPollEtag = "Etag"
+	LongPollEtag = "Long-Poll-Etag"
 
 	longPollPrefix          = "/gohan/long_poll_notifications/"
 	longPollNotificationTTL = 10 // sec
