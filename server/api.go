@@ -233,6 +233,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			return
 		}
 
+		w.Header().Add("Cache-Control", "no-cache, no-store")
 		w.Header().Add(LongPollEtag, newEtag)
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
 		routes.ServeJson(w, context["response"])
@@ -269,6 +270,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			return
 		}
 
+		w.Header().Add("Cache-Control", "no-cache, no-store")
 		w.Header().Add(LongPollEtag, newEtag)
 		routes.ServeJson(w, context["response"])
 	}

@@ -43,7 +43,7 @@ func calculateResponseEtag(context middleware.Context) string {
 	hash := md5.New()
 	responseBytes, _ := json.Marshal(context["response"])
 	hash.Write(responseBytes)
-	etag := fmt.Sprintf(`"%x"`, hash.Sum(nil))
+	etag := fmt.Sprintf(`W/"%x"`, hash.Sum(nil))
 	log.Debug("[LongPolling] Calculated hash: %s", etag)
 	return etag
 }
