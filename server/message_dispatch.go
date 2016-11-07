@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/cloudwan/gohan/server/middleware"
+	// "github.com/cloudwan/gohan/server/resources"
 )
 
 // MessageDispatch implements a thread-safe pub-sub mechanism. Subs wait on specified keys to be broadcasted on.
@@ -81,16 +82,22 @@ func (md *MessageDispatch) GetOrWait(key string, oldHash string, context middlew
 		return currentHash, nil
 	}
 
+	return md.WaitForResource(key, oldHash, context, getResource, getHash)
+}
+
+// WaitForResource waits until key is notified and returns new resource hash.
+// The resource itself is stored in context.
+func (md *MessageDispatch) WaitForResource(key string, oldHash string, context middleware.Context, getResource func(middleware.Context) error, getHash func(middleware.Context) string) (string, error) {
 	md.waitLocked(key)
 
 	delete(context, "response")
 	if err := getResource(context); err != nil {
-		log.Warning("[MessageDispatch] GetOrWait: Error when retrying retrieving resource %s", key)
+		log.Warning("[MessageDispatch] WaitForResource: Error when retrying retrieving resource %s", key)
 		return "", err
 	}
 
 	newHash := getHash(context)
-	log.Debug("[MessageDispatch] GetOrWait: Notification received, returing new value for %s, old hash: %s, new hash %s", key, oldHash, newHash)
+	log.Debug("[MessageDispatch] WaitForResource: Notification received, returing new value for %s, old hash: %s, new hash %s", key, oldHash, newHash)
 	return newHash, nil
 }
 

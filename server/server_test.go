@@ -1448,6 +1448,25 @@ var _ = Describe("Server package test", func() {
 			}
 		}
 
+		AssertRespondsWhenNewResourceCreated := func(getCurrentResourceVersion func() string) func() {
+			return func() {
+				newNetworkColor := "blue"
+				tenantName := "red"
+				newNetwork := getNetwork(newNetworkColor, tenantName)
+				requestURL := getNetworkSingularURL(newNetworkColor)
+
+				responseChan := make(chan *http.Response, 1)
+				doneChan := make(chan bool, 1)
+				go asyncLongPoll(requestURL, getCurrentResourceVersion(), doneChan, responseChan)
+				Consistently(doneChan).ShouldNot(Receive())
+
+				postResponse := testURL("POST", networkPluralURL, adminTokenID, newNetwork, http.StatusCreated)
+				Expect(postResponse).To(HaveKeyWithValue("network", util.MatchAsJSON(newNetwork)))
+
+				Eventually(doneChan, time.Second*10).Should(Receive())
+			}
+		}
+
 		AssertHangsIfVersionsSameUntilNotified := func(getRequestURL, getCurrentResourceVersion func() string) func() {
 			return func() {
 				responseChan := make(chan *http.Response, 1)
@@ -1487,7 +1506,7 @@ var _ = Describe("Server package test", func() {
 				return getNetworkSingularURL("red")
 			}
 
-			Context("without or with empty long polling header", func() {
+			Context("with empty long polling header", func() {
 				getOriginalResourceEtag := func() string {
 					return ""
 				}
@@ -1495,6 +1514,10 @@ var _ = Describe("Server package test", func() {
 				It("should respond immediately", AssertRespondsImmediately(getRequestURL, getOriginalResourceEtag))
 
 				It("should respond new version", AssertVersionsDifferent(getRequestURL, getOriginalResourceEtag))
+
+				Context("on a path that doesn't exist", func() {
+					It("should repsond when resource is created on that path", AssertRespondsWhenNewResourceCreated(getOriginalResourceEtag))
+				})
 			})
 
 			Context("versions are different", func() {
@@ -1662,6 +1685,7 @@ func getEtag(r *http.Response) string {
 }
 
 func asyncLongPoll(requestURL, currentResourceVersion string, done chan bool, response chan *http.Response) {
+	defer GinkgoRecover()
 	_, r := testLongPollURL("GET", requestURL, adminTokenID, currentResourceVersion, http.StatusOK)
 	response <- r
 	done <- true

@@ -233,7 +233,7 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 			return
 		}
 
-		w.Header().Add("Cache-Control", "no-cache")
+		w.Header().Add("Cache-Control", "no-cache, no-store")
 		w.Header().Add(LongPollEtag, newEtag)
 		w.Header().Add("X-Total-Count", fmt.Sprint(context["total"]))
 		routes.ServeJson(w, context["response"])
@@ -252,18 +252,30 @@ func MapRouteBySchema(server *Server, dataStore db.DB, s *schema.Schema) {
 
 		var newEtag string
 		var err error
-		if r.Header.Get(LongPollHeader) != "" {
-			oldEtag := r.Header.Get(LongPollHeader)
-			getResource := func(context middleware.Context) error {
-				return resources.GetSingleResource(context, dataStore, s, id)
-			}
-			newEtag, err = server.longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
-		} else {
-			err = resources.GetSingleResource(context, dataStore, s, id)
-			if err == nil {
-				newEtag = calculateResponseEtag(context)
-			}
+		// if r.Header.Get(LongPollHeader) != "" {
+		// 	oldEtag := r.Header.Get(LongPollHeader)
+		// 	getResource := func(context middleware.Context) error {
+		// 		return resources.GetSingleResource(context, dataStore, s, id)
+		// 	}
+		// 	newEtag, err = server.longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
+		// } else {
+		// 	err = resources.GetSingleResource(context, dataStore, s, id)
+		// 	if err == nil {
+		// 		newEtag = calculateResponseEtag(context)
+		// 	}
+		// }
+
+		getResource := func(context middleware.Context) error {
+			return resources.GetSingleResource(context, dataStore, s, id)
 		}
+		actionFunc = ;
+		if doesHeaderExist(r, LongPollHeader) && r.HeaderGet(LongPollHeader) == "" {
+			actionFunc = server.longPoll.WaitForResource(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
+		} else {
+			actionFunc = server.longPoll.GetOrWait(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
+		}
+		oldEtag := r.Header.Get(LongPollHeader)
+		newEtag, err = actionFunc(r.URL.Path, oldEtag, context, getResource, calculateResponseEtag)
 
 		if err != nil {
 			handleError(w, err)

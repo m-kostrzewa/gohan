@@ -19,12 +19,14 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/cloudwan/gohan/db"
 	"github.com/cloudwan/gohan/db/transaction"
 	"github.com/cloudwan/gohan/schema"
 	"github.com/cloudwan/gohan/server/middleware"
+	"github.com/cloudwan/gohan/server/resources"
 	gohan_sync "github.com/cloudwan/gohan/sync"
 	"github.com/cloudwan/gohan/util"
 )
@@ -130,6 +132,26 @@ func AddLongPollNotificationEntry(fullKey string, sync gohan_sync.Sync) error {
 	}
 	log.Debug("[LongPolling] Added long poll notification entry: %s (TTL = %d sec).", fullKey, longPollNotificationTTL)
 	return nil
+}
+
+func doesHeaderExist(req *http.Request, key string) bool {
+	canon := http.CanonicalHeaderKey(key)
+	_, exists := req.Header[canon]
+	return exists
+}
+
+func ignoreResourceNotfoundError(resourceGetter func(context middleware.Context) error) func(middleware.Context) error {
+	return func(context middleware.Context) error {
+		err := resourceGetter(context)
+		switch err.(type) {
+		case resources.ResourceError:
+			if err.(resources.ResourceError).Problem == resources.NotFound {
+				context["response"] = ""
+			}
+			return nil
+		}
+		return err
+	}
 }
 
 func startLongPollWatchProcess(server *Server) {
